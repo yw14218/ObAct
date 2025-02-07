@@ -18,7 +18,31 @@ import copy
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
 theta = 0
-optimal_view = None
+
+def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075, 0.075), yaw_range=(-np.pi / 4, np.pi / 4)):
+    """Randomize the object's position in the scene for a free joint."""
+    global theta
+    # Get the free joint ID (first free joint in the system)
+    object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
+
+    theta = np.random.uniform(*yaw_range)
+    print(theta)
+    # Update position in the free joint's `data.qpos`
+    data.qpos[16:23] = [
+        np.random.uniform(*x_range),  # Randomize x position
+        np.random.uniform(*y_range),  # Randomize y position
+        0,  # Randomize z position
+        -np.sin(theta/2),  # Randomize w position
+        0,  # Randomize qx position
+        0,  # Randomize qy position
+        np.cos(theta/2)  # Randomize qz position
+    ]
+
+    # Forward propagate the simulation state
+    mujoco.mj_forward(model, data)
+
+    # Log the new position for debugging
+    print(f"New object position: {data.xpos[object_body_id]}")
 
 def compute_approach_pose(goal, offset_distance=0.07):
     # Create a copy of the goal pose to avoid modifying the original
@@ -47,9 +71,8 @@ def compute_approach_pose(goal, offset_distance=0.07):
     return approach_pose
 
 def move_to_object():
-    """Move the left arm to align with the object's position."""
+    """Move the gripper to align with the object's position."""
     global theta
-    global optimal_view
     mink.move_mocap_to_frame(model, data, "left/target", "handle_site", "site")
 
     # Update task targets
@@ -59,8 +82,8 @@ def move_to_object():
     quat_scalar_first = np.roll(quat, shift=1)
     goal.wxyz_xyz[0:4] = quat_scalar_first 
 
-    aloha_mink_wrapper.tasks[0].set_target(goal)
-    aloha_mink_wrapper.tasks[1].set_target(optimal_view)
+    aloha_mink_wrapper.tasks[0].set_target(compute_approach_pose(goal))
+    aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
     
     # Solve inverse kinematics
     aloha_mink_wrapper.solve_ik(rate.dt)
@@ -68,27 +91,6 @@ def move_to_object():
     # Apply the calculated joint positions to actuators
     data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
 
-def move_to_optimal_view():
-    """Move the right arm to align with the object's optimal view."""
-    global optimal_view
-    # Update task targets
-    goal = mink.SE3.from_mocap_name(model, data, "right/target")
-    goal.wxyz_xyz[-1] = 0.3
-    goal.wxyz_xyz[-2] = 0.3
-    goal.wxyz_xyz[-3] = -0.07
-    quat = R.from_euler('xyz', [0, np.pi / 6, -np.pi / 2], degrees=False).as_quat()
-    quat_scalar_first = np.roll(quat, shift=1)
-    goal.wxyz_xyz[0:4] = quat_scalar_first 
-
-    aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
-    aloha_mink_wrapper.tasks[1].set_target(goal)
-    
-    optimal_view = goal
-    # Solve inverse kinematics
-    aloha_mink_wrapper.solve_ik(rate.dt)
-
-    # Apply the calculated joint positions to actuators
-    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
 
 def is_gripper_near_object(vel_threshold=0.5, dis_threshold=0.3):
     """Check if the gripper is close enough to the object."""
@@ -101,22 +103,6 @@ def is_gripper_near_object(vel_threshold=0.5, dis_threshold=0.3):
     sum_of_vel = np.sum(np.abs(left_qvel_raw))
     
     print(sum_of_vel, distance)
-    return sum_of_vel < vel_threshold and distance < dis_threshold
-
-def is_gripper_at_optimal_view(vel_threshold=0.1, dis_threshold=0.5):
-    """Check if the gripper is close enough to the object."""
-    object_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "handle_site")]
-    gripper_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right/gripper")]
-
-    distance = np.linalg.norm(gripper_position - object_position)
-    qvel_raw = data.qvel.copy()
-    left_qvel_raw = qvel_raw[12:19]
-    sum_of_vel = np.sum(np.abs(left_qvel_raw))
-    
-    print(sum_of_vel, distance)
-    if sum_of_vel == 0:
-        return False
-    
     return sum_of_vel < vel_threshold and distance < dis_threshold
 
 def close_gripper():
@@ -214,7 +200,7 @@ if __name__ == "__main__":
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
 
             # Sample object poses
-            mujoco.mj_forward(model, data)
+            sample_object_position(data, model)
 
             # Set the initial posture target
             aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
@@ -222,7 +208,6 @@ if __name__ == "__main__":
             # Rate limiter for fixed update frequency
             rate = RateLimiter(frequency=100, warn=False)
 
-            has_moved_to_optimal_view = False
             has_grasped = False
             gripper_closed = False
             object_lifted = False
@@ -235,16 +220,10 @@ if __name__ == "__main__":
 
                     if not img_queue.full():
                         img_queue.put(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+                    continue
                 
-                    if not has_moved_to_optimal_view:
-                        move_to_optimal_view()
-
-                        # Check if gripper has reached the optimal view
-                        if is_gripper_at_optimal_view():
-                            print("optimal view reached.")
-                            has_moved_to_optimal_view = True
-
-                    elif not has_grasped:
+                    if not has_grasped:
                         # Align gripper with the object
                         move_to_object()
 
@@ -263,6 +242,22 @@ if __name__ == "__main__":
                     elif not object_lifted:
                         # Lift the object after grasping
                         lift_object()
+
+                        # Check if the object has been lifted
+                        if check_object_lifted():
+                            object_lifted = True
+                            print("Task complete. Reinitializing scene...")
+
+                            # Reinitialize the scene for the next task
+                            initialize_scene(data, model)
+
+                            aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
+                            sample_object_position(data, model)
+
+                            # Reset flags for the next cycle
+                            has_grasped = False
+                            gripper_closed = False
+                            object_lifted = False
 
                     # Compensate gravity
                     aloha_mink_wrapper.compensate_gravity([model.body("left/base_link").id, model.body("right/base_link").id])
