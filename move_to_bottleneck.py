@@ -44,7 +44,7 @@ def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075
     # Log the new position for debugging
     print(f"New object position: {data.xpos[object_body_id]}")
 
-def compute_approach_pose(goal, offset_distance=0.07):
+def compute_approach_pose(goal, offset_distance=0.1):
     # Create a copy of the goal pose to avoid modifying the original
     approach_pose = copy.deepcopy(goal)
     
@@ -61,7 +61,7 @@ def compute_approach_pose(goal, offset_distance=0.07):
     # The approach vector (assuming z-axis of the rotation matrix is forward)
     approach_vector = rotation_matrix[:, 2]  # Z-axis of the rotation matrix
     approach_vector[1] *= -1
-    print(approach_vector)
+    # print(approach_vector)
     # Offset the position by the approach vector scaled by the distance
     approach_position = position - approach_vector * offset_distance
     
@@ -82,7 +82,16 @@ def move_to_object():
     quat_scalar_first = np.roll(quat, shift=1)
     goal.wxyz_xyz[0:4] = quat_scalar_first 
 
-    aloha_mink_wrapper.tasks[0].set_target(compute_approach_pose(goal))
+    gripper_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")]
+    pre_goal = compute_approach_pose(goal)
+    qvel_raw = data.qvel.copy()
+    left_qvel_raw = qvel_raw[:8]
+    sum_of_vel = np.sum(np.abs(left_qvel_raw))
+    # print(np.linalg.norm(gripper_position - pre_goal.wxyz_xyz[4:]), sum_of_vel)
+    if np.linalg.norm(gripper_position - pre_goal.wxyz_xyz[4:]) < 0.21 and sum_of_vel < 5: 
+        aloha_mink_wrapper.tasks[0].set_target(goal)
+    else:
+        aloha_mink_wrapper.tasks[0].set_target(compute_approach_pose(goal))
     aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
     
     # Solve inverse kinematics
@@ -91,8 +100,7 @@ def move_to_object():
     # Apply the calculated joint positions to actuators
     data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
 
-
-def is_gripper_near_object(vel_threshold=0.5, dis_threshold=0.3):
+def is_gripper_near_object(vel_threshold=0.5, dis_threshold=0.301):
     """Check if the gripper is close enough to the object."""
     object_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "handle_site")]
     gripper_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")]
@@ -113,10 +121,15 @@ def lift_object(lift_height=0.15):
     """Lift the gripper by a specified height."""
     # Get current gripper position
     current_position = mink.SE3.from_mocap_name(model, data, "left/target")
-    
+    # current_rotation = np.copy(data.xmat[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")]).reshape(3,3)
+    # quat = R.from_matrix(current_rotation).as_quat()
+
     # Set the goal position slightly higher
     goal = current_position.copy()
+    
     goal.wxyz_xyz[0:4] = [1, 0, 0, 0]
+    # quat_scalar_first = np.roll(quat, shift=1)
+    # goal.wxyz_xyz[0:4] = quat_scalar_first
     goal.wxyz_xyz[-1] += lift_height
     aloha_mink_wrapper.tasks[0].set_target(goal)
 
@@ -220,8 +233,6 @@ if __name__ == "__main__":
 
                     if not img_queue.full():
                         img_queue.put(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-
-                    continue
                 
                     if not has_grasped:
                         # Align gripper with the object
