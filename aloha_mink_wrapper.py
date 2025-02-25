@@ -59,6 +59,7 @@ class AlohaMinkWrapper:
         l_geoms = mink.get_subtree_geom_ids(self.model, self.model.body("left/upper_arm_link").id)
         r_geoms = mink.get_subtree_geom_ids(self.model, self.model.body("right/upper_arm_link").id)
         frame_geoms = mink.get_body_geom_ids(self.model, self.model.body("metal_frame").id)
+        
 
         collision_pairs = [
             (l_wrist_geoms, r_wrist_geoms),
