@@ -1,4 +1,4 @@
-__pycache__/
+__pycache__
 robot_control/__pycache__/
 *.png
 *.h5
