@@ -105,7 +105,7 @@ class AlohaMinkWrapper:
                 rate_dt,
                 solver,
                 limits=self.limits,
-                damping=1e-5,
+                damping=1e-1,
             )
             self.configuration.integrate_inplace(vel, rate_dt)
 
