@@ -29,7 +29,7 @@ def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075
     object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
 
     theta = np.random.uniform(*yaw_range)
-    print(theta)
+    # print(theta)
     # Update position in the free joint's `data.qpos`
     data.qpos[16:23] = [
         np.random.uniform(*x_range),  # Randomize x position
@@ -44,8 +44,8 @@ def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075
     # Forward propagate the simulation state
     mujoco.mj_forward(model, data)
 
-    # Log the new position for debugging
-    print(f"New object position: {data.xpos[object_body_id]}")
+    # # Log the new position for debugging
+    # print(f"New object position: {data.xpos[object_body_id]}")
     return object_qpos
 
 def compute_approach_pose(goal, offset_distance=0.1):
@@ -143,7 +143,7 @@ def lift_object(lift_height=0.15, ):
     # Apply the calculated joint positions to actuators
     data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
 
-def check_object_lifted():
+def check_object_lifted(data, model):
     """Check if the object has been lifted to the desired height."""
     object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
     object_position = data.xpos[object_body_id]
@@ -151,14 +151,14 @@ def check_object_lifted():
     # Check if the object has reached or exceeded the target lift height
     return object_position[-1] >= 0.08
 
-def initialize_scene(data, model):
+def initialize_scene(data, model, aloha_mink_wrapper):
     """Initialize the scene to reset the task."""
     mujoco.mj_resetDataKeyframe(model, data, model.key("neutral_pose").id)
     aloha_mink_wrapper.configuration.update(data.qpos)
     mujoco.mj_forward(model, data)
     aloha_mink_wrapper.initialize_mocap_targets()
 
-def get_robot_data(renderer):
+def get_robot_data(data, model, renderer, aloha_mink_wrapper):
     """Get the current robot observation and action."""
     action = np.zeros(7) # 6 DoF + gripper
     state = np.zeros(7) # 6 DoF + gripper
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     aloha_mink_wrapper = AlohaMinkWrapper(model, data)
 
     # Initialize to the neutral pose
-    initialize_scene(data, model)
+    initialize_scene(data, model, aloha_mink_wrapper)
 
     renderer = mujoco.Renderer(model, 480, 640)
     
@@ -294,7 +294,7 @@ if __name__ == "__main__":
                         lift_object()
 
                         # Check if the object has been lifted
-                        if check_object_lifted():
+                        if check_object_lifted(data, model):
                             object_lifted = True
                             # Save the episode
                             with h5py.File(f"datasets/{folder_name}/episode_{episode_cnt}.h5", "w") as f:
@@ -316,7 +316,7 @@ if __name__ == "__main__":
                             print("Task complete. Reinitializing scene...")
 
                             # Reinitialize the scene for the next task
-                            initialize_scene(data, model)
+                            initialize_scene(data, model, aloha_mink_wrapper)
 
                             aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
                             object_qpos = sample_object_position(data, model)
@@ -331,7 +331,7 @@ if __name__ == "__main__":
                     # Compensate gravity
                     aloha_mink_wrapper.compensate_gravity([model.body("left/base_link").id, model.body("right/base_link").id])
                     
-                    action, state, wrist_img, global_img = get_robot_data(renderer=renderer)
+                    action, state, wrist_img, global_img = get_robot_data(data, model, renderer, aloha_mink_wrapper)
                     actions.append(action)
                     states.append(state)
                     wrist_images.append(wrist_img)
@@ -353,7 +353,7 @@ if __name__ == "__main__":
                         print("Task complete. Reinitializing scene...")
 
                         # Reinitialize the scene for the next task
-                        initialize_scene(data, model)
+                        initialize_scene(data, model, aloha_mink_wrapper)
 
                         aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
                         object_qpos = sample_object_position(data, model)

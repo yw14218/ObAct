@@ -17,45 +17,11 @@ import queue
 import os
 import copy
 import h5py
+from mug_pickup import initialize_scene, display_image
 
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
 theta = 0
-
-def initialize_scene(data, model):
-    """Initialize the scene to reset the task."""
-    mujoco.mj_resetDataKeyframe(model, data, model.key("neutral_pose").id)
-    aloha_mink_wrapper.configuration.update(data.qpos)
-    mujoco.mj_forward(model, data)
-    aloha_mink_wrapper.initialize_mocap_targets()
-
-def display_image(img_queue, running_event):
-    # Create a directory to save images if it doesn't exist
-    os.makedirs('camera_frames', exist_ok=True)
-    frame_count = 0
-
-    while running_event.is_set():
-        try:
-            img = img_queue.get(timeout=1)
-            if img is None:
-                break
-            
-            # Convert to PIL Image
-            pil_img = Image.fromarray(img[:, :, ::-1])
-            
-            # Save the image
-            frame_filename = f'camera_frames/frame_{frame_count:04d}.png'
-            # pil_img.save(frame_filename)
-            
-            frame_count += 1
-            
-            # Optional: print saved frame info
-            # print(f"Saved {frame_filename}")
-
-        except queue.Empty:
-            continue
-        except Exception as e:
-            print(f"Error saving image: {e}")
 
 def set_object_qpos(object_qpos):
     """
@@ -74,7 +40,7 @@ if __name__ == "__main__":
     aloha_mink_wrapper = AlohaMinkWrapper(model, data)
 
     # Initialize to the neutral pose
-    initialize_scene(data, model)
+    initialize_scene(data, model, aloha_mink_wrapper)
 
     renderer = mujoco.Renderer(model, 480, 640)
     
