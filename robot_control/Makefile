@@ -5,7 +5,8 @@ launch:
 	ros2 launch interbotix_xsarm_control xsarm_control.launch.py robot_model:=vx300s & \
 	sleep 3 && \
 	ros2 launch interbotix_xsarm_moveit xsarm_moveit.launch.py robot_model:=vx300s hardware_type:=actual & \
-	sleep 3 && \
-	python3.10 hand_eye_tf_broadcaster.py
+	wait
+	@echo "Launching RealSense Camera..."
+	ros2 launch realsense2_camera rs_launch.py rgb_camera.color.profile:=848x480x30 depth_module.profile:=848x480x30 align_depth.enable:=true spatial_filter.enable:=true temporal_filter.enable:=true hole_filling_filter.enable:=true device_type:=d405
 
 .PHONY: all launch
