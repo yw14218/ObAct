@@ -71,18 +71,42 @@ def move_to_object():
 def move_to_optimal_view():
     """Move the right arm to align with the object's optimal view."""
     global optimal_view
+    global theta
     # Update task targets
-    goal = mink.SE3.from_mocap_name(model, data, "right/target")
-    goal.wxyz_xyz[-1] = 0.3
-    goal.wxyz_xyz[-2] = 0.3
-    goal.wxyz_xyz[-3] = -0.07
-    quat = R.from_euler('xyz', [0, np.pi / 6, -np.pi / 2], degrees=False).as_quat()
-    quat_scalar_first = np.roll(quat, shift=1)
-    goal.wxyz_xyz[0:4] = quat_scalar_first 
-
-    aloha_mink_wrapper.tasks[1].set_target(goal)
+    mink.move_mocap_to_frame(model, data, "right/target", "handle_site", "site")
+    av_goal = mink.SE3.from_mocap_name(model, data, "right/target")
     
-    optimal_view = goal
+    quat = av_goal.wxyz_xyz[0:4]
+    pos = av_goal.wxyz_xyz[4:]
+    rotation_matrix = R.from_quat(quat).as_matrix()
+    y_axis = rotation_matrix[:, 1]
+    y_axis_normalized = y_axis / np.linalg.norm(y_axis)
+    x_axis = rotation_matrix[:, 0]  
+    x_axis_normalized = x_axis / np.linalg.norm(x_axis)
+    if theta > 0:
+        pos = pos - 0.15 * y_axis_normalized
+    else:
+        pos = pos + 0.15 * y_axis_normalized 
+    pos = pos + 0.15 * x_axis_normalized
+    pos[2] += 0.1
+    av_goal.wxyz_xyz[4:] = pos  
+    # rotate the rotation matrix by 90 degrees on the z-axis
+    rotation_matrix = R.from_quat(quat).as_matrix()
+    if theta > 0:
+        theta_x = np.pi/2.5
+    else:
+        theta_x = -np.pi/2.5  
+    theta_y = -np.pi/6
+    euler = R.from_euler('xyz', [theta_x, theta_y, 0], degrees=False)
+    R_view = euler.as_matrix()
+
+    rotation_matrix = np.dot(rotation_matrix, R_view)
+    quat = R.from_matrix(rotation_matrix).as_quat()
+    av_goal.wxyz_xyz[0:4] = quat
+    aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
+    aloha_mink_wrapper.tasks[1].set_target(av_goal)
+    
+    optimal_view = av_goal
     # Solve inverse kinematics
     aloha_mink_wrapper.solve_ik(rate.dt)
 
@@ -116,7 +140,8 @@ def is_gripper_at_optimal_view(vel_threshold=0.1, dis_threshold=0.5):
     if sum_of_vel == 0:
         return False
     
-    return sum_of_vel < vel_threshold and distance < dis_threshold
+    # return sum_of_vel < vel_threshold and distance < dis_threshold
+    return False
 
 def close_gripper():
     """Gradually close the gripper."""
@@ -205,6 +230,8 @@ if __name__ == "__main__":
     display_thread = threading.Thread(target=display_image, args=(img_queue, running_event))
     display_thread.start()
 
+    np.random.seed(2)
+
     try:
         # Launch the viewer
         with mujoco.viewer.launch_passive(
@@ -221,7 +248,7 @@ if __name__ == "__main__":
             # Rate limiter for fixed update frequency
             rate = RateLimiter(frequency=100, warn=False)
 
-            has_moved_to_optimal_view = True
+            has_moved_to_optimal_view = False
             has_grasped = False
             gripper_closed = False
             object_lifted = False
@@ -231,6 +258,8 @@ if __name__ == "__main__":
                     # Render 
                     renderer.update_scene(data, camera="wrist_cam_right")
                     img = renderer.render()
+                    # save image
+                    cv2.imwrite('camera_frames/frame_{:04d}.png'.format(0), img)
 
                     if not img_queue.full():
                         img_queue.put(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))

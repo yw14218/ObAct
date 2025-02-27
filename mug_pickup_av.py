@@ -21,6 +21,73 @@ import h5py
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
 theta = 0
+av_goal = None
+
+def move_to_optimal_view():
+    """Move the right arm to align with the object's optimal view."""
+    global optimal_view
+    global theta
+    global av_goal
+    # Update task targets
+    mink.move_mocap_to_frame(model, data, "right/target", "handle_site", "site")
+    av_goal = mink.SE3.from_mocap_name(model, data, "right/target")
+    
+    quat = av_goal.wxyz_xyz[0:4]
+    pos = av_goal.wxyz_xyz[4:]
+    rotation_matrix = R.from_quat(quat).as_matrix()
+
+    # Sample a point on a cylinder around the object with fixed radius and height
+    y_axis = rotation_matrix[:, 1]
+    y_axis_normalized = y_axis / np.linalg.norm(y_axis)
+    x_axis = rotation_matrix[:, 0]  
+    x_axis_normalized = x_axis / np.linalg.norm(x_axis)
+
+    radius = 0.15
+    radian = np.random.uniform(np.pi/4, np.pi/2)
+    if theta > 0:
+        pos = pos - radius * y_axis_normalized * np.cos(radian)
+    else:
+        pos = pos + radius * y_axis_normalized * np.cos(radian)
+    pos = pos + radius * x_axis_normalized * np.sin(radian)
+    pos[2] += 0.1
+    av_goal.wxyz_xyz[4:] = pos  
+
+    # Randomize the rotation of the camera
+    rotation_matrix = R.from_quat(quat).as_matrix()
+    angle_1 = np.random.uniform(np.pi/4, np.pi/2) # the direction of camera on the horizontal plane, 0 means parallel to the mug handle; 
+                                                  # pi/2 means perpendicular to the mug handle
+    if theta > 0:
+        theta_x = angle_1
+    else:
+        theta_x = -angle_1
+    angle_2 = np.random.uniform(np.pi/4, np.pi/9) # the direction of camera on the vertical plane, 0 means parallel to the mug handle;
+    theta_y = -angle_2
+    euler = R.from_euler('xyz', [theta_x, theta_y, 0], degrees=False)
+    R_view = euler.as_matrix()
+    rotation_matrix = np.dot(rotation_matrix, R_view)
+    quat = R.from_matrix(rotation_matrix).as_quat()
+    av_goal.wxyz_xyz[0:4] = quat
+
+    aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
+    aloha_mink_wrapper.tasks[1].set_target(av_goal)
+    
+    optimal_view = av_goal.copy()
+    # Solve inverse kinematics
+    aloha_mink_wrapper.solve_ik(rate.dt)
+
+    # Apply the calculated joint positions to actuators
+    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
+
+def is_gripper_near_optimal_view(data, model, vel_threshold=1.5, vel_threshold2=0.01):
+    """Check if the gripper is close enough to the object's optimal view."""
+    global optimal_view
+    gripper_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")]
+    distance = np.linalg.norm(gripper_position - optimal_view.wxyz_xyz[4:])
+    qvel_raw = data.qvel.copy()
+    right_qvel_raw = qvel_raw[8:16]
+    sum_of_vel = np.sum(np.abs(right_qvel_raw))
+    print(sum_of_vel, distance)
+    return sum_of_vel < vel_threshold and sum_of_vel > vel_threshold2 
 
 def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075, 0.075), yaw_range=(-np.pi / 4, np.pi / 4)):
     """Randomize the object's position in the scene for a free joint."""
@@ -103,13 +170,13 @@ def move_to_object():
     else:
         print("Stage 1")
         aloha_mink_wrapper.tasks[0].set_target(compute_approach_pose(goal))
-    aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
+    # aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
     
     # Solve inverse kinematics
     aloha_mink_wrapper.solve_ik(rate.dt)
 
     # Apply the calculated joint positions to actuators
-    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
+    data.ctrl[aloha_mink_wrapper.actuator_ids[:6]] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids[:6]]
 
 def is_gripper_near_object(vel_threshold=2.0, dis_threshold=0.31):
     """Check if the gripper is close enough to the object."""
@@ -148,7 +215,7 @@ def lift_object(lift_height=0.15, ):
     aloha_mink_wrapper.solve_ik(rate.dt)
 
     # Apply the calculated joint positions to actuators
-    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
+    data.ctrl[aloha_mink_wrapper.actuator_ids[:6]] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids[:6]]
 
 def check_object_lifted(data, model):
     """Check if the object has been lifted to the desired height."""
@@ -258,6 +325,7 @@ if __name__ == "__main__":
             has_grasped = False
             gripper_closed = False
             object_lifted = False
+            near_optimal_view = False
 
             success_cnt = 0
             fail_cnt = 0
@@ -273,6 +341,8 @@ if __name__ == "__main__":
             t = 0
             close_gripper_cnt = 0
 
+            av_steps = 0
+
             # Create dataset folder with current date and time
             import datetime
             now = datetime.datetime.now()
@@ -283,8 +353,20 @@ if __name__ == "__main__":
                 while viewer.is_running():
                     action = np.zeros(7) # 6 DoF + gripper
                     state = np.zeros(7) # 6 DoF + gripper
-                
-                    if not has_grasped:
+                    if not near_optimal_view:
+                        # Move the robot to the optimal view of the object
+                        move_to_optimal_view()
+                        av_steps += 1
+
+                        # Check if the gripper is near the object's optimal view
+                        if is_gripper_near_optimal_view(data, model) and av_steps > 50:
+                            print("Optimal view reached. Moving to object...")
+                            for i in range(100):
+                                mujoco.mj_step(model, data)
+                            near_optimal_view = True
+                            av_steps = 0
+
+                    elif not has_grasped:
                         # Align gripper with the object
                         move_to_object()
 
@@ -338,6 +420,8 @@ if __name__ == "__main__":
                             gripper_closed = False
                             object_lifted = False
                             stage2_reached = False
+                            has_grasped = False
+                            near_optimal_view = False
 
                             success_cnt += 1
                             if success_cnt >= 50:
@@ -345,17 +429,21 @@ if __name__ == "__main__":
 
                     # Compensate gravity
                     aloha_mink_wrapper.compensate_gravity([model.body("left/base_link").id, model.body("right/base_link").id])
-                    
+
                     action, state, imgs = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
-                    actions.append(action)
-                    states.append(state)
-                    for key, img in zip(camera_keys, imgs):
-                        cam_images[key].append(img)
+                    
+                    # Only record data if the vision manipulator is in the optimal view
+                    if near_optimal_view:
+                        actions.append(action)
+                        states.append(state)
+                        for key, img in zip(camera_keys, imgs):
+                            cam_images[key].append(img)
 
                     if not img_queue.full():
                         img_queue.put(cv2.cvtColor(imgs[0], cv2.COLOR_RGB2BGR))
-
-                    step_cnt += 1
+                    # Only update the step count if the vision manipulator is in the optimal view
+                    if near_optimal_view:
+                        step_cnt += 1
                     if step_cnt > 700:
                         step_cnt = 0
                         # Episode timeout, reset the scene
@@ -379,6 +467,7 @@ if __name__ == "__main__":
                         gripper_closed = False
                         object_lifted = False
                         stage2_reached = False
+                        near_optimal_view = False
 
                         fail_cnt += 1
 

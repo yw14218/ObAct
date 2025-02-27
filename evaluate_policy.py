@@ -48,7 +48,7 @@ def preprocess_image(img):
 
 if __name__ == "__main__":
     # Load the pretrained policy
-    pretrained_policy_path = Path("ckpts\\020000\\pretrained_model")
+    pretrained_policy_path = Path("ckpts\\mug_pickup_overhead_cam\\070000\\pretrained_model")
 
     policy = ACTPolicy.from_pretrained(pretrained_policy_path)
     policy.eval()
@@ -61,7 +61,8 @@ if __name__ == "__main__":
         device = torch.device("cpu")
         print(f"GPU is not available. Device set to: {device}. Inference will be slower than on GPU.")
     policy.to(device)
-
+    # policy.config.temporal_ensemble_coeff=None
+    # policy.config.n_action_steps=1
     # Reset the policy and environmens to prepare for rollout
     policy.reset()
 
@@ -105,24 +106,27 @@ if __name__ == "__main__":
             episode_cnt = 0
             step_cnt = 0
             success_cnt = 0
+            cam_imgs = {}
+            camera_keys = ["overhead_cam"]
 
             print(f"Episode {episode_cnt} started...")
 
             try:
                 while viewer.is_running():
-                    _, state, wrist_img, global_img = get_robot_data(data, model, renderer, aloha_mink_wrapper)
+                    _, state, images = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=["overhead_cam"])
+
                     state = torch.from_numpy(state).float().to(device)
-                    wrist_img = torch.from_numpy(wrist_img).float().to(device)
-                    global_img = torch.from_numpy(global_img).float().to(device)
-                    wrist_img = preprocess_image(wrist_img)
-                    global_img = preprocess_image(global_img)
+                    for key, img in zip(camera_keys, images):
+                        cam_imgs[key] = torch.from_numpy(img).float().to(device)
+                        cam_imgs[key] = preprocess_image(cam_imgs[key])
 
                     # prepare observation
                     observation = {
                         "observation.state": state.unsqueeze(0),
-                        "observation.images.wrist_cam_left": wrist_img.unsqueeze(0),
-                        "observation.images.teleoperator_pov": global_img.unsqueeze(0),
                     }
+                    for key in camera_keys:
+                        observation[f"observation.images.{key}"] = cam_imgs[key].unsqueeze(0)
+                    cam_imgs = {}
 
                     # Predict the next action with respect to the current observation
                     with torch.inference_mode():
@@ -150,7 +154,7 @@ if __name__ == "__main__":
                         print(f"Episode {episode_cnt} started...")
                     
                     # Check if the episode has failed
-                    if step_cnt > 700:
+                    if step_cnt > 1000:
                         print("Episode failed. Resetting the scene...")
                         episode_cnt += 1
                         step_cnt = 0
