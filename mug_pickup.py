@@ -239,13 +239,41 @@ if __name__ == "__main__":
     stage2_reached = False
     camera_keys = ["overhead_cam"]
 
+    # Function to initialize spheres off-screen
+    def initialize_spheres(viewer, max_spheres, sphere_radius=0.005):
+        for i in range(max_spheres):
+            mujoco.mjv_initGeom(
+                viewer.user_scn.geoms[i],
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[sphere_radius, 0, 0],
+                pos=[-100, -100, -100],  # Place off-screen
+                mat=np.eye(3).flatten(),
+                rgba=[0, 0, 0, 0]  # Make transparent
+            )
+        viewer.user_scn.ngeom = max_spheres
+
+    # Function to update the positions of the spheres
+    def update_trajectory_spheres(viewer, positions, max_spheres, sphere_index, color):
+        # Update the position of the current sphere
+        if len(positions) > 0:
+            viewer.user_scn.geoms[sphere_index].pos[:] = positions[-1]
+            viewer.user_scn.geoms[sphere_index].rgba[:] = color
+
+        # Return the next sphere index
+        return (sphere_index + 1) % max_spheres
+
+    # Initialize the spheres
+    sphere_index = 0
+    gripper_positions = []
+    max_spheres = 1000
+
     try:
         # Launch the viewer
         with mujoco.viewer.launch_passive(
             model=model, data=data, show_left_ui=False, show_right_ui=False
         ) as viewer:
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
-
+            initialize_spheres(viewer, max_spheres)
             # Sample object poses
             object_qpos = sample_object_position(data, model)
 
@@ -349,6 +377,7 @@ if __name__ == "__main__":
                     action, state, imgs = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
                     actions.append(action)
                     states.append(state)
+
                     for key, img in zip(camera_keys, imgs):
                         cam_images[key].append(img)
 
@@ -367,7 +396,6 @@ if __name__ == "__main__":
                         t = 0
 
                         print("Task complete. Reinitializing scene...")
-
                         # Reinitialize the scene for the next task
                         initialize_scene(data, model, aloha_mink_wrapper)
 
@@ -381,6 +409,12 @@ if __name__ == "__main__":
                         stage2_reached = False
 
                         fail_cnt += 1
+
+                    gripper_position = data.site_xpos[data.site(f"left/gripper").id]
+                    gripper_positions.append(gripper_position)
+                    
+                    # gripper_positions.append(gripper_position.wxyz_xyz[4:])
+                    sphere_index = update_trajectory_spheres(viewer, gripper_positions, max_spheres, sphere_index, [1, 0, 0, 1])
 
                     # Step the simulation
                     mujoco.mj_step(model, data)

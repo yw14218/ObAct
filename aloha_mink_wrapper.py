@@ -1,4 +1,5 @@
 from typing import Sequence
+from scipy.spatial.transform import Rotation as R
 import mink
 import numpy as np
 import mujoco
@@ -28,7 +29,6 @@ class AlohaMinkWrapper:
             mink.VelocityLimit(model, self.velocity_limits),
             self.collision_avoidance_limit,
         ]
-        
 
     def create_tasks(self):
         """Create and return a list of Mink tasks."""
@@ -133,4 +133,32 @@ class AlohaMinkWrapper:
             total_mass = self.model.body_subtreemass[subtree_id]
             mujoco.mj_jacSubtreeCom(self.model, self.data, jac, subtree_id)
             qfrc_applied[:] -= self.model.opt.gravity * total_mass @ jac
+    
+    @staticmethod
+    def pose_inv(pose):
+        """Inverse a 4x4 homogeneous transformation matrix."""
+        R = pose[:3, :3]
+        T = np.eye(4)
+        T[:3, :3] = R.T
+        T[:3, 3] = - R.T @ np.ascontiguousarray(pose[:3, 3])
+        return T
+
+    @staticmethod
+    def transform_left_to_right(data):
+        T_ee_world_left = np.eye(4)
+        ee_position = data.site_xpos[data.site("left/gripper").id]
+        ee_orientation = data.site_xmat[data.site("left/gripper").id].reshape(3, 3)
+        T_ee_world_left[:3, :3] = ee_orientation
+        T_ee_world_left[:3, 3] = ee_position
+
+        T_ee_world_right = np.eye(4)
+        ee_position = data.site_xpos[data.site("right/gripper").id]
+        ee_orientation = data.site_xmat[data.site("right/gripper").id].reshape(3, 3)
+        T_ee_world_right[:3, :3] = ee_orientation
+        T_ee_world_right[:3, 3] = ee_position
+
+        return AlohaMinkWrapper.pose_inv(T_ee_world_right) @ T_ee_world_left
+
+
+
 

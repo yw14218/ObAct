@@ -10,7 +10,6 @@ import mujoco
 import mujoco.viewer
 import mink
 import numpy as np
-import random
 import cv2
 import threading
 import queue
@@ -22,6 +21,21 @@ _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
 theta = 0
 av_goal = None
+
+def state_to_transform(state):
+    """Convert state vector [x, y, z, roll, pitch, yaw] to transformation matrix."""
+    t = state[:3]
+    r = R.from_euler('xyz', state[3:], degrees=False).as_matrix()
+    T = np.eye(4)
+    T[:3, :3] = r
+    T[:3, 3] = t
+    return T
+
+def transform_to_state(T):
+    """Convert transformation matrix to state vector [x, y, z, roll, pitch, yaw]."""
+    t = T[:3, 3]
+    r = R.from_matrix(T[:3, :3]).as_euler('xyz', degrees=False)
+    return np.concatenate((t, r))
 
 def move_to_optimal_view(data, model, aloha_mink_wrapper, theta, dt=None):
     """Move the right arm to align with the object's optimal view."""
@@ -440,7 +454,7 @@ if __name__ == "__main__":
 
                     elif not has_grasped:
                         # Align gripper with the object
-                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, pos_noise=pos_noise, quat_noise=quat_noise, stage2_reached=stage2_reached)
+                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, pos_noise=None, quat_noise=None, stage2_reached=stage2_reached)
 
                         # Check if gripper has reached the object
                         if is_gripper_near_object():
@@ -509,10 +523,11 @@ if __name__ == "__main__":
 
                     action, state, imgs = get_robot_data_with_vision_qpos(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
                     
+                    print(action)
                     # Only record data if the vision manipulator is in the optimal view
                     if stage2_reached and last_ee_pose is not None:
-                        tf = aloha_mink_wrapper.configuration.get_transform(source_name="right/gripper_base", source_type="body", dest_name="left/gripper_base", dest_type="body")
-                        current_ee_pose = np.array(tf.wxyz_xyz)
+                        tf = aloha_mink_wrapper.transform_left_to_right(data)
+                        current_ee_pose = transform_to_state(tf)
                         current_gripper_state = np.array([state[-1]])
                         action = np.concatenate([current_ee_pose, current_gripper_state])
                         state = np.concatenate([last_ee_pose, last_gripper_state])
@@ -527,8 +542,8 @@ if __name__ == "__main__":
                         step_cnt += 1
 
                     elif stage2_reached and last_ee_pose is None:
-                        tf = aloha_mink_wrapper.configuration.get_transform(source_name="right/gripper_base", source_type="body", dest_name="left/gripper_base", dest_type="body")
-                        last_ee_pose = np.array(tf.wxyz_xyz)
+                        tf = aloha_mink_wrapper.transform_left_to_right(data)
+                        last_ee_pose = transform_to_state(tf)
                         last_gripper_state = np.array([state[-1]])
                         last_imgs = imgs
 
