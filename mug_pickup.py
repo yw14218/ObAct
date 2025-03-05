@@ -46,7 +46,7 @@ def sample_object_position(data, model, x_range=(-0.075, 0.075), y_range=(-0.075
 
     # # Log the new position for debugging
     # print(f"New object position: {data.xpos[object_body_id]}")
-    return object_qpos
+    return object_qpos, theta
 
 def compute_approach_pose(goal, offset_distance=0.1):
     # Create a copy of the goal pose to avoid modifying the original
