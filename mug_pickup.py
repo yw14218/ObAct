@@ -412,7 +412,7 @@ if __name__ == "__main__":
 
                     gripper_position = data.site_xpos[data.site(f"left/gripper").id]
                     gripper_positions.append(gripper_position)
-                    
+
                     # gripper_positions.append(gripper_position.wxyz_xyz[4:])
                     sphere_index = update_trajectory_spheres(viewer, gripper_positions, max_spheres, sphere_index, [1, 0, 0, 1])
 

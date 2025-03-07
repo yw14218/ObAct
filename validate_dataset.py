@@ -61,7 +61,7 @@ if __name__ == "__main__":
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
 
             # Sample object poses
-            with h5py.File("datasets\\2025-02-25_05-44-40\episode_0.h5", "r") as f:
+            with h5py.File("datasets/2025-03-05_15-08-49/episode_0.h5", "r") as f:
                 actions = f["action"][:]
                 object_qpos = f["object_qpos"][:]
             
