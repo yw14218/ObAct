@@ -37,6 +37,12 @@ def transform_to_state(T):
     r = R.from_matrix(T[:3, :3]).as_euler('xyz', degrees=False)
     return np.concatenate((t, r))
 
+def transform_to_wxyz_xyz(T):
+    """Convert transformation matrix to wxyz_xyz format."""
+    t = T[:3, 3]
+    r = R.from_matrix(T[:3, :3]).as_quat(scalar_first=True)
+    return np.concatenate((r, t))
+
 def move_to_optimal_view(data, model, aloha_mink_wrapper, theta, dt=None):
     """Move the right arm to align with the object's optimal view."""
     global optimal_view
@@ -56,24 +62,25 @@ def move_to_optimal_view(data, model, aloha_mink_wrapper, theta, dt=None):
     x_axis_normalized = x_axis / np.linalg.norm(x_axis)
 
     radius = 0.15
-    radian = np.random.uniform(np.pi/4, np.pi/3)
+    radian = np.pi / 4 # specify the position of camera
     if theta > 0:
         pos = pos - radius * y_axis_normalized * np.cos(radian)
     else:
         pos = pos + radius * y_axis_normalized * np.cos(radian)
     pos = pos + radius * x_axis_normalized * np.sin(radian)
-    pos[2] += 0.1
+    height = 0.1
+    pos[2] += height
     av_goal.wxyz_xyz[4:] = pos  
 
     # Randomize the rotation of the camera
     rotation_matrix = R.from_quat(quat).as_matrix()
-    angle_1 = np.random.uniform(np.pi/3, np.pi/2) # the direction of camera on the horizontal plane, 0 means parallel to the mug handle; 
-                                                  # pi/2 means perpendicular to the mug handle
+    angle_1 = np.pi / 2     # the direction of camera on the horizontal plane, 0 means parallel to the mug handle; 
+                            # pi/2 means perpendicular to the mug handle
     if theta > 0:
         theta_x = angle_1
     else:
         theta_x = -angle_1
-    angle_2 = np.random.uniform(np.pi/4, np.pi/6) # the direction of camera on the vertical plane, 0 means parallel to the mug handle;
+    angle_2 = np.pi / 5 # the direction of camera on the vertical plane, 0 means parallel to the mug handle;
     theta_y = -angle_2
     euler = R.from_euler('xyz', [theta_x, theta_y, 0], degrees=False)
     R_view = euler.as_matrix()
@@ -189,9 +196,8 @@ def compute_approach_pose(goal, offset_distance=0.1):
 
     return approach_pose
 
-def move_to_object(data, model, aloha_mink_wrapper, pos_noise=None, quat_noise=None, stage2_reached=False, dt=None):
+def move_to_object(data, model, aloha_mink_wrapper, theta, pos_noise=None, quat_noise=None, stage2_reached=False, dt=None):
     """Move the gripper to align with the object's position."""
-    global theta
 
     mink.move_mocap_to_frame(model, data, "left/target", "handle_site", "site")
 
@@ -211,23 +217,24 @@ def move_to_object(data, model, aloha_mink_wrapper, pos_noise=None, quat_noise=N
         quat = R.from_quat(xyzw)
         quat = quat * R.from_quat(quat_noise)
         pre_goal.wxyz_xyz[0:4] = np.array([quat.as_quat()[3], quat.as_quat()[0], quat.as_quat()[1], quat.as_quat()[2]])
-    print("noise", pos_noise, quat_noise)   
+    # print("noise", pos_noise, quat_noise)   
     qvel_raw = data.qvel.copy()
     left_qvel_raw = qvel_raw[:8]
     sum_of_vel = np.sum(np.abs(left_qvel_raw))
     # print(np.linalg.norm(gripper_position - pre_goal.wxyz_xyz[4:]), sum_of_vel)
     if np.linalg.norm(gripper_position - pre_goal.wxyz_xyz[4:]) < 0.21 and sum_of_vel < 2.0 and not stage2_reached: 
         stage2_reached = True
+        # print(np.linalg.norm(gripper_position - pre_goal.wxyz_xyz[4:]))
         import time
         time.sleep(2)
         for i in range(100):
             mujoco.mj_step(model, data)
 
     if stage2_reached:
-        print("Stage 2")
+        # print("Stage 2")
         aloha_mink_wrapper.tasks[0].set_target(goal)
     else:
-        print("Stage 1")
+        # print("Stage 1")
         aloha_mink_wrapper.tasks[0].set_target(pre_goal)
     # aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
     
@@ -412,6 +419,7 @@ if __name__ == "__main__":
 
             success_cnt = 0
             fail_cnt = 0
+            record_frequency = 2
 
             cam_images = {}
             for key in camera_keys:
@@ -428,6 +436,7 @@ if __name__ == "__main__":
 
             stage2_reached = False
             last_ee_pose = None
+            last_gripper_state = None
             current_ee_pose = None
             last_imgs = None
 
@@ -454,7 +463,7 @@ if __name__ == "__main__":
 
                     elif not has_grasped:
                         # Align gripper with the object
-                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, pos_noise=None, quat_noise=None, stage2_reached=stage2_reached)
+                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, theta, pos_noise=pos_noise, quat_noise=quat_noise, stage2_reached=stage2_reached)
 
                         # Check if gripper has reached the object
                         if is_gripper_near_object():
@@ -483,6 +492,7 @@ if __name__ == "__main__":
                                 f.create_dataset("/action", data=np.array(actions))
                                 f.create_dataset("/observations/qpos", data=np.array(states))
                                 f.create_dataset("/object_qpos", data=object_qpos)
+                                f.create_dataset("/theta", data=np.array([theta]))
                             episode_cnt += 1
                             
                             cam_images = {}
@@ -511,6 +521,7 @@ if __name__ == "__main__":
                             has_grasped = False
                             near_optimal_view = False
                             last_ee_pose = None
+                            last_gripper_state = None
                             current_ee_pose = None
                             last_imgs = None
 
@@ -521,26 +532,27 @@ if __name__ == "__main__":
                     # Compensate gravity
                     aloha_mink_wrapper.compensate_gravity([model.body("left/base_link").id, model.body("right/base_link").id])
 
-                    action, state, imgs = get_robot_data_with_vision_qpos(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
+                    action, state, imgs = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
                     
-                    print(action)
                     # Only record data if the vision manipulator is in the optimal view
                     if stage2_reached and last_ee_pose is not None:
+                        step_cnt += 1
                         tf = aloha_mink_wrapper.transform_left_to_right(data)
                         current_ee_pose = transform_to_state(tf)
                         current_gripper_state = np.array([state[-1]])
-                        action = np.concatenate([current_ee_pose, current_gripper_state])
-                        state = np.concatenate([last_ee_pose, last_gripper_state])
-                        last_ee_pose = current_ee_pose
-                        last_gripper_state = current_gripper_state
-                        actions.append(action)
-                        states.append(state)
-                        for key, img in zip(camera_keys, last_imgs):
-                            cam_images[key].append(img)
-                            if step_cnt == 0:
-                                cv2.imwrite(f"camera_frames/episode_{episode_cnt}_{key}.png", img)
-                        step_cnt += 1
-
+                        if step_cnt % record_frequency == 0:
+                            action = np.concatenate([current_ee_pose, current_gripper_state]) # - np.concatenate([last_ee_pose, last_gripper_state])
+                            state = np.concatenate([last_ee_pose, last_gripper_state])
+                            last_ee_pose = current_ee_pose
+                            last_gripper_state = current_gripper_state
+                            last_imgs = imgs
+                            actions.append(action)
+                            states.append(state)
+                            for key, img in zip(camera_keys, last_imgs):
+                                cam_images[key].append(img)
+                                if step_cnt == 0:
+                                    cv2.imwrite(f"camera_frames/episode_{episode_cnt}_{key}.png", img)
+                        
                     elif stage2_reached and last_ee_pose is None:
                         tf = aloha_mink_wrapper.transform_left_to_right(data)
                         last_ee_pose = transform_to_state(tf)
@@ -576,6 +588,7 @@ if __name__ == "__main__":
                         stage2_reached = False
                         near_optimal_view = False
                         last_ee_pose = None
+                        last_gripper_state = None
                         current_ee_pose = None
                         last_imgs = None
 

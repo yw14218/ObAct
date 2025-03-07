@@ -62,8 +62,8 @@ class AlohaMinkWrapper:
         
 
         collision_pairs = [
-            (l_wrist_geoms, r_wrist_geoms),
-            (l_geoms + r_geoms, frame_geoms + ["table"]),
+            # (l_wrist_geoms, r_wrist_geoms),
+            # (l_geoms + r_geoms, frame_geoms + ["table"]),
         ]
         return mink.CollisionAvoidanceLimit(
             model=self.model,
@@ -97,7 +97,7 @@ class AlohaMinkWrapper:
         mink.move_mocap_to_frame(self.model, self.data, "left/target", "left/gripper", "site")
         mink.move_mocap_to_frame(self.model, self.data, "right/target", "right/gripper", "site")
 
-    def solve_ik(self, rate_dt, solver="quadprog", max_iters=5, pos_threshold=5e-3, ori_threshold=5e-3):
+    def solve_ik(self, rate_dt, solver="quadprog", max_iters=10, pos_threshold=5e-3, ori_threshold=5e-3):
         """Solve inverse kinematics with limits."""
         for i in range(max_iters):
             vel = mink.solve_ik(
@@ -106,7 +106,7 @@ class AlohaMinkWrapper:
                 rate_dt,
                 solver,
                 limits=self.limits,
-                damping=1e-1,
+                damping=1e-5,
             )
             self.configuration.integrate_inplace(vel, rate_dt)
 
@@ -158,6 +158,15 @@ class AlohaMinkWrapper:
         T_ee_world_right[:3, 3] = ee_position
 
         return AlohaMinkWrapper.pose_inv(T_ee_world_right) @ T_ee_world_left
+    
+    @staticmethod
+    def transform_right_to_world(data):
+        T_ee_world_right = np.eye(4)
+        ee_position = data.site_xpos[data.site("right/gripper").id]
+        ee_orientation = data.site_xmat[data.site("right/gripper").id].reshape(3, 3)
+        T_ee_world_right[:3, :3] = ee_orientation
+        T_ee_world_right[:3, 3] = ee_position
+        return T_ee_world_right
 
 
 

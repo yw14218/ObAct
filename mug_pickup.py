@@ -150,13 +150,13 @@ def lift_object(lift_height=0.15, ):
     # Apply the calculated joint positions to actuators
     data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
 
-def check_object_lifted(data, model):
+def check_object_lifted(data, model, threshold=0.08):
     """Check if the object has been lifted to the desired height."""
     object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
     object_position = data.xpos[object_body_id]
 
     # Check if the object has reached or exceeded the target lift height
-    return object_position[-1] >= 0.08
+    return object_position[-1] >= threshold
 
 def initialize_scene(data, model, aloha_mink_wrapper):
     """Initialize the scene to reset the task."""

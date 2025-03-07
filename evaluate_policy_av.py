@@ -22,8 +22,8 @@ import copy
 
 from lerobot.common.policies.act.modeling_act import ACTPolicy
 
-from mug_pickup import initialize_scene, display_image, sample_object_position, check_object_lifted
-from mug_pickup_av import get_robot_data_with_vision_qpos, move_to_optimal_view, is_gripper_near_optimal_view, move_to_object, sample_constrained_pos_noise, sample_constrained_quat_noise
+from mug_pickup import initialize_scene, display_image, sample_object_position, check_object_lifted, get_robot_data
+from mug_pickup_av import move_to_optimal_view, is_gripper_near_optimal_view, move_to_object, sample_constrained_pos_noise, sample_constrained_quat_noise, state_to_transform, transform_to_wxyz_xyz, transform_to_state
 
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
@@ -52,16 +52,25 @@ def preprocess_image(img):
 def move_to_pose(data, model, aloha_mink_wrapper, pose, rate_dt):
     """Move the robot to the given pose."""
     # Set the target pose
-    aloha_mink_wrapper.tasks[0].set_target(pose)
+    goal = mink.SE3.from_mocap_name(model, data, "left/target")
+    goal.wxyz_xyz[:] = pose
+    aloha_mink_wrapper.tasks[0].set_target(goal)
     aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
     # Solve the IK
     aloha_mink_wrapper.solve_ik(rate_dt)
     # Update the configuration
     data.ctrl[aloha_mink_wrapper.actuator_ids[:6]] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids[:6]]
+    # Calculate the error
+    gripper_pos = data.site_xpos[data.site("left/gripper").id]
+    error = np.linalg.norm(goal.wxyz_xyz[4:] - gripper_pos)
+    qvel_raw = data.qvel.copy()
+    left_qvel_raw = qvel_raw[:8]
+    sum_of_vel = np.sum(np.abs(left_qvel_raw))
+    return True
 
 if __name__ == "__main__":
     # Load the pretrained policy
-    pretrained_policy_path = Path("ckpts\\mug_pickup_av\\010000\\pretrained_model")
+    pretrained_policy_path = Path("ckpts\\mug_pickup_av\\040000\\pretrained_model")
 
     policy = ACTPolicy.from_pretrained(pretrained_policy_path)
     policy.eval()
@@ -75,7 +84,7 @@ if __name__ == "__main__":
         print(f"GPU is not available. Device set to: {device}. Inference will be slower than on GPU.")
     policy.to(device)
     # policy.config.temporal_ensemble_coeff=None
-    # policy.config.n_action_steps=1
+    # policy.config.n_action_steps=4
     # Reset the policy and environmens to prepare for rollout
     policy.reset()
 
@@ -99,7 +108,7 @@ if __name__ == "__main__":
     # Start the display thread
     display_thread = threading.Thread(target=display_image, args=(img_queue, running_event))
     display_thread.start()
-
+    np.random.seed(0)
     try:
         # Launch the viewer
         with mujoco.viewer.launch_passive(
@@ -124,24 +133,46 @@ if __name__ == "__main__":
             camera_keys = ["wrist_cam_right"]
             near_optimal_view = False
             stage2_reached = False
+            move_to_pose_cnt = 0
             pos_noise = sample_constrained_pos_noise()
             quat_noise = sample_constrained_quat_noise()
+
+            max_spheres = 100  # Maximum number of spheres to visualize the trajectory
+            sphere_radius = 0.01  # Radius of the spheres
+
+            # Function to initialize spheres off-screen
+            def initialize_spheres(viewer, max_spheres):
+                for i in range(max_spheres):
+                    mujoco.mjv_initGeom(
+                        viewer.user_scn.geoms[i],
+                        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                        size=[sphere_radius, 0, 0],
+                        pos=[-100, -100, -100],  # Place off-screen
+                        mat=np.eye(3).flatten(),
+                        rgba=[0, 0, 0, 0]  # Make transparent
+                    )
+                viewer.user_scn.ngeom = max_spheres
+
+            # Function to update the positions of the spheres
+            def update_trajectory_spheres(viewer, positions, max_spheres, sphere_index, color):
+                # Update the position of the current sphere
+                if len(positions) > 0:
+                    viewer.user_scn.geoms[sphere_index].pos[:] = positions[-1]
+                    viewer.user_scn.geoms[sphere_index].rgba[:] = color
+
+                # Return the next sphere index
+                return (sphere_index + 1) % max_spheres
+
+            # Initialize the spheres
+            sphere_index = 0
+            initialize_spheres(viewer, max_spheres)
+            pos_lists = []
 
             print(f"Episode {episode_cnt} started...")
 
             try:
                 while viewer.is_running():
                     if not near_optimal_view:
-                        # tf_r2w = aloha_mink_wrapper.configuration.get_transform_frame_to_world(frame_name="right/gripper_base", frame_type="body")
-                        # tf_l2r = aloha_mink_wrapper.configuration.get_transform(source_name="right/gripper_base", source_type="body", dest_name="left/gripper_base", dest_type="body")
-                        # tf_l2w = tf_r2w @ tf_l2r.inverse()
-                        # print(tf_l2w.wxyz_xyz)
-                        # tf_l2w = aloha_mink_wrapper.configuration.get_transform_frame_to_world(frame_name="left/gripper_base", frame_type="body")
-                        # print(tf_l2w.wxyz_xyz)
-                        # gripper_position = data.xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")]
-                        # print(gripper_position)
-                        # raise
-
                         # Move the robot to the optimal view of the object
                         move_to_optimal_view(data, model, aloha_mink_wrapper, theta, rate.dt)
                         av_steps += 1
@@ -155,11 +186,11 @@ if __name__ == "__main__":
                             av_steps = 0
                     elif not stage2_reached:
                         # Align gripper with the object
-                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, pos_noise=pos_noise, quat_noise=quat_noise, stage2_reached=stage2_reached, dt=rate.dt)
+                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, theta, pos_noise=None, quat_noise=None, stage2_reached=stage2_reached, dt=rate.dt)
                     else:
-                        _, state, images = get_robot_data_with_vision_qpos(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
-                        tf = aloha_mink_wrapper.configuration.get_transform(source_name="right/gripper_base", source_type="body", dest_name="left/gripper_base", dest_type="body")
-                        current_ee_pose = np.array(tf.wxyz_xyz)
+                        _, state, images = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
+                        tf = aloha_mink_wrapper.transform_left_to_right(data)
+                        current_ee_pose = transform_to_state(tf)
                         current_gripper_state = np.array([state[-1]])
                         state = np.concatenate([current_ee_pose, current_gripper_state])
                         state = torch.from_numpy(state).float().to(device)
@@ -174,28 +205,35 @@ if __name__ == "__main__":
                         for key in camera_keys:
                             observation[f"observation.images.{key}"] = cam_imgs[key].unsqueeze(0)
                         cam_imgs = {}
-
-                        # Predict the next action with respect to the current observation
-                        with torch.inference_mode():
-                            action = policy.select_action(observation)
+                        if move_to_pose_cnt == 0 or move_to_pose_cnt > 4:
+                            # Predict the next action with respect to the current observation
+                            with torch.inference_mode():
+                                action = policy.select_action(observation)
+                            move_to_pose_cnt = 0
+                            step_cnt += 1
+                            action = action.squeeze(0).to("cpu").numpy()
+                        state = state.cpu().numpy().squeeze()
+                        tf_left_to_right = state_to_transform(action[:6])
+                        tf_right_to_world = aloha_mink_wrapper.transform_right_to_world(data)
+                        tf_left_to_world = tf_right_to_world @ tf_left_to_right
+                        # transform transformation matrix to wxyz_xyz
+                        wxyz_xyz = transform_to_wxyz_xyz(tf_left_to_world)
+                        pos_lists.append(wxyz_xyz[4:])
+                        sphere_index = update_trajectory_spheres(viewer, pos_lists, max_spheres, sphere_index, [1, 0, 0, 1])
+                        # move to the pose
+                        reached = move_to_pose(data, model, aloha_mink_wrapper, wxyz_xyz, rate.dt)
+                        gripper_action = action[6]
+                        if gripper_action < 0.036:
+                            data.ctrl[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")] = 0
+                        else:
+                            data.ctrl[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")] = 0.037
                         
-                        action = action.squeeze(0).to("cpu").numpy()
-
-                        # data.ctrl[aloha_mink_wrapper.actuator_ids[:6]] = action[:6]
-                        goal = mink.SE3.from_mocap_name(model, data, "left/target")
-                        goal.wxyz_xyz[:] = action[:7]
-
-                        tf2 = aloha_mink_wrapper.configuration.get_transform_frame_to_world(frame_name="right/gripper_base", frame_type="body")
-                        goal = tf2 @ tf.inverse()
-                        print(goal.wxyz_xyz)
-                        move_to_pose(data, model, aloha_mink_wrapper, goal, rate.dt)
-                        data.ctrl[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")] = action[-1]
-
-                        step_cnt += 1
+                        move_to_pose_cnt += 1
+                        
                         # print("Step count:", step_cnt)
 
                         # Check if the object is lifted
-                        if check_object_lifted(data, model):
+                        if check_object_lifted(data, model, 0.05):
                             print("Object lifted!")
                             episode_cnt += 1
                             success_cnt += 1
@@ -215,7 +253,7 @@ if __name__ == "__main__":
                             print(f"Episode {episode_cnt} started...")
                         
                         # Check if the episode has failed
-                        if step_cnt > 1000:
+                        if step_cnt > 400:
                             print("Episode failed. Resetting the scene...")
                             episode_cnt += 1
                             step_cnt = 0
