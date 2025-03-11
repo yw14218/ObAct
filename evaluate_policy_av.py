@@ -70,7 +70,7 @@ def move_to_pose(data, model, aloha_mink_wrapper, pose, rate_dt):
 
 if __name__ == "__main__":
     # Load the pretrained policy
-    pretrained_policy_path = Path("ckpts\\mug_pickup_av\\040000\\pretrained_model")
+    pretrained_policy_path = Path("ckpts\\mug_pickup_av\\100001\\pretrained_model")
 
     policy = ACTPolicy.from_pretrained(pretrained_policy_path)
     policy.eval()
@@ -84,7 +84,7 @@ if __name__ == "__main__":
         print(f"GPU is not available. Device set to: {device}. Inference will be slower than on GPU.")
     policy.to(device)
     # policy.config.temporal_ensemble_coeff=None
-    # policy.config.n_action_steps=4
+    policy.config.temporal_ensemble_coeff=0.01
     # Reset the policy and environmens to prepare for rollout
     policy.reset()
 
@@ -186,7 +186,7 @@ if __name__ == "__main__":
                             av_steps = 0
                     elif not stage2_reached:
                         # Align gripper with the object
-                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, theta, pos_noise=None, quat_noise=None, stage2_reached=stage2_reached, dt=rate.dt)
+                        stage2_reached = move_to_object(data, model, aloha_mink_wrapper, theta, pos_noise=pos_noise, quat_noise=quat_noise, stage2_reached=stage2_reached, dt=rate.dt)
                     else:
                         _, state, images = get_robot_data(data, model, renderer, aloha_mink_wrapper, camera_keys=camera_keys)
                         tf = aloha_mink_wrapper.transform_left_to_right(data)
@@ -195,6 +195,8 @@ if __name__ == "__main__":
                         state = np.concatenate([current_ee_pose, current_gripper_state])
                         state = torch.from_numpy(state).float().to(device)
                         for key, img in zip(camera_keys, images):
+                            # # save the image
+                            # cv2.imwrite(f"images/{episode_cnt}_{step_cnt}_{key}.png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
                             cam_imgs[key] = torch.from_numpy(img).float().to(device)
                             cam_imgs[key] = preprocess_image(cam_imgs[key])
 
@@ -253,7 +255,7 @@ if __name__ == "__main__":
                             print(f"Episode {episode_cnt} started...")
                         
                         # Check if the episode has failed
-                        if step_cnt > 400:
+                        if step_cnt > 600:
                             print("Episode failed. Resetting the scene...")
                             episode_cnt += 1
                             step_cnt = 0
