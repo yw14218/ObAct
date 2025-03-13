@@ -89,22 +89,22 @@ def move_arm(bot, goal_pos, goal_rot, gripper_status):
     else:
         pass
 
-    # # Move the arm using previous guess if available
-    # solution, success = bot.arm.set_ee_pose_components(
-    #     *goal_pos, *goal_rot, blocking=False, moving_time=0.05, accel_time=0.01,
-    #     custom_guess=previous_guess if previous_guess is not None else None
-    # )
+    # Move the arm using previous guess if available
+    solution, success = bot.arm.set_ee_pose_components(
+        *goal_pos, *goal_rot, blocking=False, moving_time=0.05, accel_time=0.01,
+        custom_guess=previous_guess if previous_guess is not None else None
+    )
 
-    # print(goal_pos, gripper_status)
-    # # Update previous guess only if IK succeeded
-    # if success and solution is not None:
-    #     previous_guess = solution
+    print(goal_pos, gripper_status)
+    # Update previous guess only if IK succeeded
+    if success and solution is not None:
+        previous_guess = solution
 
-    # # Control the gripper
-    # if gripper_status > 0.1:
-    #     bot.gripper.grasp()
-    # else:
-    #     bot.gripper.release()
+    # Control the gripper
+    if gripper_status > 0.1:
+        bot.gripper.grasp()
+    else:
+        bot.gripper.release()
 
 
 def main():
