@@ -5,12 +5,12 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from pymoveit2 import MoveIt2
-import robot_control.viper_robot as robot
+import viper_robot as robot
 
 class InverseKinematicsSolver:
     def __init__(self):
-        rclpy.init()
-        self.node = Node("inverse_kinematics_solver")
+        # rclpy.init()
+        self.node = Node("Moveit2_Viper")
         
         # Declare parameters for position and orientation
         self.node.declare_parameter("synchronous", True)
@@ -28,6 +28,16 @@ class InverseKinematicsSolver:
             callback_group=self.callback_group,
         )
         
+        self.moveit2.max_velocity = 0.2
+        self.moveit2.max_acceleration = 0.2
+
+        self.moveit2.add_collision_box(
+            id="table",
+            pose=(0, 0, 0, 0, 0, 0),
+            position=(0, 0, 0),
+            quat_xyzw=(0, 0, 0, 1),
+            size=(1, 1, 0.05),
+        )
         # Spin the node in a background thread
         self.executor = rclpy.executors.MultiThreadedExecutor(2)
         self.executor.add_node(self.node)
@@ -56,11 +66,18 @@ class InverseKinematicsSolver:
                 retval = self.moveit2.get_compute_ik_result(future)
         
         if retval is None:
-            print("Failed.")
+            print("Computing IK Failed.")
         else:
             # print("Succeeded. Result: " + str(retval))
             return retval
     
+    
+    def move_to_pose(self, position, quat_xyzw):
+        self.moveit2.move_to_pose(
+            position=position,
+            quat_xyzw=quat_xyzw,
+        )
+
     def shutdown(self):
         rclpy.shutdown()
         self.executor_thread.join()
@@ -68,7 +85,8 @@ class InverseKinematicsSolver:
 # example
 if __name__ == "__main__":
     ik_solver = InverseKinematicsSolver()
-    position = [0.5, 0.0, 0.25]
+    position = [0.3, 0.0, 0.2]
     quat_xyzw = [1.0, 0.0, 0.0, 0.0]
     ik_solver.compute_ik(position, quat_xyzw)
+    ik_solver.publish_commands(position, quat_xyzw)
     ik_solver.shutdown()

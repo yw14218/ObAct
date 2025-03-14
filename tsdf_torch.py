@@ -7,19 +7,18 @@ import time
 import torch
 
 # Constants
-DEFAULT_DATA_FOLDER = "/Users/yilong/Downloads/home 2/yilong/ObAct/3d_data"
-DEFAULT_INTRINSIC_FILE = "d405_intrinsic.npy"
+DEFAULT_DATA_FOLDER = "3d_data"
+DEFAULT_INTRINSIC_FILE = "robot_control/d405_intrinsic.npy"
 TSDF_SIZE = 0.45
 TSDF_RESOLUTION = 64
-NUM_SAMPLED_VIEWS = 50
+NUM_SAMPLED_VIEWS = 64
 VOXEL_DOWN_SIZE = 0.005
 CAMERA_SCALE = 0.03
-TOP_GAIN_SCALE = 0.03
 TOP_N = 5
-RAY_BATCH_SIZE = 5000  # Reduced to avoid memory issues
+RAY_BATCH_SIZE = int(480 * 848 * 0.1)
 
-# Check for MPS availability
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+# Check for CUDA availability
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 class ViewSampler:
@@ -55,7 +54,7 @@ class ViewSampler:
         z = r * np.cos(theta)
         return np.array([x, y, z])
 
-    def generate_hemisphere_points_with_orientations(self, radius=0.1, num_points=100):
+    def generate_hemisphere_points_with_orientations(self, radius=0.1, num_points=128):
         points = np.asarray(self.pcd.points)
         self.center = np.mean(points, axis=0)
         self.center[0] += 0.15 
@@ -86,6 +85,11 @@ class ViewSampler:
             list(zip(eye_positions, rotation_matrices)),
             dtype=[('position', float, (3,)), ('rotation', float, (3, 3))]
         )
+    
+        # filter out too low points
+        sampling_data = sampling_data[sampling_data['position'][:, 2] > 0.1]
+        print(f"Generated {len(sampling_data)} viewpoints")
+
         return sampling_data
 
 class TSDFVolume:
@@ -169,32 +173,27 @@ class ViewEvaluator:
         print(f"Target Bounding Box: {self.target_bbox}")
 
     def compute_information_gain(self, pose, width=848, height=480):
-        start_time = time.time()
         position = torch.tensor(pose[:3, 3], dtype=torch.float32, device=device)
         rotation = torch.tensor(pose[:3, :3], dtype=torch.float32, device=device)
 
         # Generate rays
         u, v = torch.meshgrid(torch.arange(width, device=device), torch.arange(height, device=device), indexing='ij')
         u, v = u.flatten(), v.flatten()
-        rays_dir = torch.zeros((len(u), 3), dtype=torch.float32, device=device)
-        fx, fy = self.intrinsic['fx'], self.intrinsic['fy']
-        cx, cy = self.intrinsic['cx'], self.intrinsic['cy']
-        
-        rays_dir[:, 0] = (u - cx) / fx
-        rays_dir[:, 1] = (v - cy) / fy
-        rays_dir[:, 2] = 1.0
+        rays_dir = torch.stack([(u - self.intrinsic['cx']) / self.intrinsic['fx'],
+                                (v - self.intrinsic['cy']) / self.intrinsic['fy'],
+                                torch.ones_like(u, dtype=torch.float32, device=device)], dim=1)
         rays_dir = rays_dir / torch.norm(rays_dir, dim=1, keepdim=True)
         rays_dir = torch.matmul(rotation, rays_dir.T).T
 
         G_x = self.compute_gain_gpu(position, rays_dir)
-        print(f"Gain computation took {time.time() - start_time:.2f} seconds")
+
         return G_x.item()
 
     def compute_gain_gpu(self, position, rays_dir):
         """Compute information gain on GPU using PyTorch, fully vectorized with batching."""
         step_size = self.voxel_size
         max_steps = int(self.tsdf.size / step_size.item())
-        G_x = torch.tensor(0, dtype=torch.int32, device=device)
+        G_x = torch.tensor(0.0, dtype=torch.float32, device=device)
 
         num_rays = rays_dir.shape[0]
         t = torch.arange(0, max_steps * step_size.item(), step_size.item(), device=device)  # [max_steps]
@@ -239,7 +238,6 @@ class ViewEvaluator:
             valid_inside = inside & in_bbox & mask
             G_x += valid_inside.sum()
 
-        print(f"Computed gain: {G_x.item()}")
         return G_x
 
 def load_data(folder_path):
@@ -342,7 +340,6 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     sampled_scales = [CAMERA_SCALE] * len(sampled_poses)
     for rank, idx in enumerate(top_gain_indices):
         sampled_colors[idx] = [1, 0, 0]
-        sampled_scales[idx] = TOP_GAIN_SCALE
     sampled_cameras = create_camera_visualizations(sampled_poses, intrinsic_o3d, colors=sampled_colors, scales=sampled_scales)
 
     bbox_geom = o3d.geometry.AxisAlignedBoundingBox(min_bound=tsdf.origin, max_bound=tsdf.origin + TSDF_SIZE)

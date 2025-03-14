@@ -40,7 +40,6 @@ def euler_from_quat(quat, seq='xyz'):
 def quat_from_euler(euler, seq='xyz'):
     return R.from_euler('xyz', euler, degrees=False).as_quat()
 
-
 def normalize_mkpts(mkpts, K):
     """
     Normalize image points using the camera intrinsic matrix.
