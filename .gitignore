@@ -4,3 +4,7 @@ robot_control/__pycache__/
 *.h5
 datasets/
 ckpts/
+3d_data/
+robot_control/can
+robot_control/mug
+robot_control/pan

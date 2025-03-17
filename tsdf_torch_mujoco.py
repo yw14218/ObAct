@@ -7,13 +7,12 @@ import time
 import torch
 
 # Constants
-DEFAULT_DATA_FOLDER = "/Users/yilong/Downloads/home 2/yilong/ObAct/3d_data"
-DEFAULT_DATA_FOLDER = "/Users/yilong/Desktop/dev/ObAct/saved_data"
-DEFAULT_INTRINSIC_FILE = "d405_intrinsic.npy"
+DEFAULT_DATA_FOLDER = "saved_data"
+DEFAULT_INTRINSIC_FILE = "robot_control/d405_intrinsic.npy"
 WIDTH, HEIGHT = 640, 480
 TSDF_SIZE = 0.5
 TSDF_RESOLUTION = 64
-NUM_SAMPLED_VIEWS = 50
+NUM_SAMPLED_VIEWS = 128
 VOXEL_DOWN_SIZE = 0.005
 CAMERA_SCALE = 0.03
 TOP_GAIN_SCALE = 0.03
@@ -21,7 +20,13 @@ TOP_N = 5
 RAY_BATCH_SIZE = 5000  # Reduced to avoid memory issues
 
 # Check for MPS availability
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")  # Use MPS for Mac with Apple Silicon
+else:
+    device = torch.device("cpu")  # Default to CPU
+
 print(f"Using device: {device}")
 
 class ViewSampler:
@@ -57,15 +62,22 @@ class ViewSampler:
         z = r * np.cos(theta)
         return np.array([x, y, z])
 
-    def generate_hemisphere_points_with_orientations(self, center=np.array([0,0,0]), radius=0.1, num_points=100):
+    def generate_hemisphere_points_with_orientations(self, center=np.array([0,0,0]), radius=0.1, num_points=100, hemisphere=None):
         self.center = center
         
         theta_samples = int(np.sqrt(num_points / 2))
         phi_samples = int(num_points / theta_samples)
         
         theta_max = np.pi / 2 - 1e-6
+
+        if hemisphere == 'left':
+            phi_vals = np.linspace(np.pi / 2, 3 * np.pi / 2, phi_samples, endpoint=False)
+        elif hemisphere == 'right':
+            phi_vals = np.linspace(-np.pi / 2, np.pi / 2, phi_samples, endpoint=False)
+        else:
+            phi_vals = np.linspace(0, 2 * np.pi, phi_samples, endpoint=False)
+        
         theta_vals = np.linspace(0, theta_max, theta_samples)
-        phi_vals = np.linspace(0, 2 * np.pi, phi_samples, endpoint=False)
         
         theta_grid, phi_grid = np.meshgrid(theta_vals, phi_vals)
         theta_flat = theta_grid.ravel()
@@ -87,7 +99,8 @@ class ViewSampler:
             dtype=[('position', float, (3,)), ('rotation', float, (3, 3))]
         )
 
-        sampling_data = sampling_data[sampling_data['position'][:, 2] >= 0.15]
+        # sampling_data = sampling_data[sampling_data['position'][:, 2] >= 0.15]
+        # sampling_data = sampling_data[sampling_data['position'][:, 0] >= -0.1]
 
         return sampling_data
 
@@ -317,8 +330,10 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
 
     # Sample viewpoints
     sampler = ViewSampler()
+    bbox = np.load("saved_data/bbox_0.npy")
+    bbox_center = (bbox[:3] + bbox[3:]) / 2
     sampler.pcd = combined_pcd
-    sampled_views = sampler.generate_hemisphere_points_with_orientations(radius=0.35, num_points=num_sampled_views)
+    sampled_views = sampler.generate_hemisphere_points_with_orientations(center=bbox_center, radius=0.35, num_points=num_sampled_views, hemisphere='right')
 
     sampled_poses = [np.eye(4) for _ in sampled_views]
     for i, view in enumerate(sampled_views):
@@ -326,8 +341,6 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     sampled_poses = [np.linalg.inv(pose) for pose in sampled_poses]
 
     # Compute information gains
-    # bbox = np.concatenate([np.min(combined_pcd.points, axis=0), np.max(combined_pcd.points, axis=0)])
-    bbox = np.load("saved_data/bbox.npy")
     evaluator = ViewEvaluator(tsdf, intrinsic, bbox)
     start_time = time.time()
     gains = [evaluator.compute_information_gain(pose) for pose in sampled_poses]
@@ -353,13 +366,16 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
     bbox_geom = o3d.geometry.AxisAlignedBoundingBox(min_bound=tsdf.origin, max_bound=tsdf.origin + TSDF_SIZE)
     bbox_geom.color = (0, 1, 0)
 
+    object_bbox_geom = o3d.geometry.AxisAlignedBoundingBox(min_bound=bbox[:3], max_bound=bbox[3:])
+    object_bbox_geom.color = (1, 0, 0)
+
     # Visualize results
     visualize_geometries(
-        [combined_pcd, bbox_geom] + original_cameras + sampled_cameras,
+        [combined_pcd, bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras,
         "Visualizing combined point cloud (no TSDF) with camera poses..."
     )
     visualize_geometries(
-        [tsdf.get_point_cloud(), bbox_geom] + original_cameras + sampled_cameras,
+        [tsdf.get_point_cloud(), bbox_geom, object_bbox_geom] + original_cameras + sampled_cameras,
         "Visualizing TSDF point cloud with camera poses..."
     )
 
