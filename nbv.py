@@ -1,77 +1,53 @@
 import os
-import glob
-import queue
-import random
-import logging
-import threading
-import multiprocessing
-from pathlib import Path
-
-import cv2
 import numpy as np
 import mujoco
 import mujoco.viewer
 import mink
 import open3d as o3d
-from PIL import Image
-from scipy.spatial.transform import Rotation as R
+from pathlib import Path
+import logging
+import cv2
 from loop_rate_limiters import RateLimiter
 from aloha_mink_wrapper import AlohaMinkWrapper
 from tsdf_torch_mujoco import TSDFVolume, ViewSampler, ViewEvaluator
-from dm_control import mujoco
+from lightglue import LightGlue
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
-K = np.load("robot_control/d405_intrinsic.npy")
-INTRINSIC = {
-    'width': 640, 'height': 480,
-    'fx': K[0, 0], 'fy': K[1, 1],
-    'cx': K[0, 2], 'cy': K[1, 2]
-}
+K = AlohaMinkWrapper.get_K(480, 640)
+INTRINSIC = {'width': 640, 'height': 480, 'fx': K[0, 0], 'fy': K[1, 1], 'cx': K[0, 2], 'cy': K[1, 2]}
 INTRINSIC_O3D = o3d.camera.PinholeCameraIntrinsic(**INTRINSIC)
-Render_once  = False
 
-def initialize_scene(data, model):
+def initialize_scene(model, data, aloha_mink_wrapper):
     mujoco.mj_resetDataKeyframe(model, data, model.key("neutral_pose").id)
     aloha_mink_wrapper.configuration.update(data.qpos)
     mujoco.mj_forward(model, data)
     aloha_mink_wrapper.initialize_mocap_targets()
 
-def move_right_arm_to_pose(data, model, aloha_mink_wrapper, pose, rate_dt):
-    """Move the robot to the given pose."""
-    global Render_once
-    # Set the target pose
-    goal = mink.SE3.from_mocap_name(model, data, "right/target")
-    goal.wxyz_xyz[:] = pose
-    aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
-    aloha_mink_wrapper.tasks[1].set_target(goal)
-    # Solve the IK
-    aloha_mink_wrapper.solve_ik(rate_dt)
-    # Update the configuration
-    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
-
+def get_optical_frame(model, data, camera_site_name="wrist_cam_right_site"):
+    camera_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, camera_site_name)
     gripper_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "right/gripper")
-    qvel_raw = data.qvel.copy()
-    left_qvel_raw = qvel_raw[12:19]
-    sum_of_vel = np.sum(np.abs(left_qvel_raw))
-    if sum_of_vel < 0.002 and not Render_once:
-        Render_once = True
-        rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)
-        save_data(object_pos, rgb, depth, mask, extrinsic, bbox)
-        print("Rendered!!!!!!!!!!!!!!!!!!!!!!!")
-    else:
-        print(sum_of_vel)
+    if camera_site_id == -1 or gripper_site_id == -1:
+        raise ValueError(f"Site not found: {camera_site_name} or right/gripper")
+
+    camera_frame = np.eye(4)
+    camera_frame[:3, 3] = data.site_xpos[camera_site_id]
+    camera_frame[:3, :3] = data.site_xmat[camera_site_id].reshape(3, 3)
+    R = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+    camera_frame[:3, :3] = camera_frame[:3, :3] @ R
+
+    gripper_frame = np.eye(4)
+    gripper_frame[:3, 3] = data.site_xpos[gripper_site_id]
+    gripper_frame[:3, :3] = data.site_xmat[gripper_site_id].reshape(3, 3)
+
+    camera_gripper = np.linalg.inv(gripper_frame) @ camera_frame
+    np.save("tasks/handeye_mujoco.npy", camera_gripper)
+    return gripper_frame @ camera_gripper
 
 def render(data, renderer, object_body_id):
     renderer.update_scene(data, camera="wrist_cam_right")
-    
-    extrinsic[:3, :3] = data.site_xmat[gripper_site_id].reshape(3, 3)
-    extrinsic[:3, 3] = data.site_xpos[gripper_site_id]
-
-    extrinsic = get_camera_optical_frame(model, data, "wrist_cam_right") 
-
     renderer.enable_segmentation_rendering()
     seg_map = renderer.render()
     mask = (seg_map[:, :, 0] == model.body_geomadr[object_body_id]).astype(np.uint8)
@@ -80,137 +56,159 @@ def render(data, renderer, object_body_id):
     renderer.enable_depth_rendering()
     depth = renderer.render()
     renderer.disable_depth_rendering()
-    
-    return rgb, depth, mask, extrinsic
+    return rgb, depth, mask, get_optical_frame(model, data)
 
-def save_data(object_pos, rgb, depth, mask, extrinsic, bbox):
-    save_dir = Path("saved_data")
+def save_data(object_pos, rgb, depth, mask, extrinsic, bbox, save_dir="saved_data"):
+    save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Determine the next available index
     existing_indices = [int(p.stem.split('_')[-1]) for p in save_dir.glob("rgb_*.png")]
-    next_index = max(existing_indices, default=-1) + 1
-    
-    rgb_filename = save_dir / f"rgb_{next_index}.png"
-    mask_filename = save_dir / f"mask_{next_index}.png"
-    depth_filename = save_dir / f"depth_{next_index}.npy"
-    pose_filename = save_dir / f"pose_{next_index}.npy"
-    bbox_filename = save_dir / f"bbox_{next_index}.npy"
+    idx = max(existing_indices, default=-1) + 1
 
-    cv2.imwrite(str(rgb_filename), rgb)
-    cv2.imwrite(str(mask_filename), mask * 255)
-    np.save(depth_filename, depth)
-    np.save(pose_filename, extrinsic)
-    np.save(bbox_filename, bbox)
-    print(f"Saved data to {save_dir} with index {next_index}", object_pos)
+    for name, data in [("rgb", rgb), ("mask", mask * 255), ("depth", depth), ("pose", extrinsic), ("bbox", bbox)]:
+        filename = save_dir / f"{name}_{idx}.{'png' if name in ['rgb', 'mask'] else 'npy'}"
+        (cv2.imwrite(str(filename), data) if name in ["rgb", "mask"] else np.save(filename, data))
+    logging.info(f"Saved data to {save_dir} with index {idx}")
+
+def has_arm_stopped(data, goal, side, threshold=0.001):
+    if side == "left":
+        gripper_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "left/gripper")
+        return np.sum(np.abs(data.qvel[:6])) < threshold and np.linalg.norm(goal.wxyz_xyz[4:] - data.site_xpos[gripper_site_id]) < threshold
+    else:
+        gripper_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "right/gripper")
+        return np.sum(np.abs(data.qvel[12:17])) < threshold and np.linalg.norm(goal.wxyz_xyz[4:] - data.site_xpos[gripper_site_id]) < threshold
+
+def move_to_pose(model, data, aloha_mink_wrapper, pose, rate_dt, renderer, object_body_id, object_pos, bbox):
+    global has_reached_next_pose
+
+    goal = mink.SE3.from_mocap_name(model, data, "right/target")
+    goal.wxyz_xyz[:] = pose
+    xcoord = pose[4].copy()
+
+    xcoord = 1 # force to move to the right for now
+    if xcoord > 0:
+        aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
+        aloha_mink_wrapper.tasks[1].set_target(goal)
+        side = "right"
+    elif xcoord < 0:
+        aloha_mink_wrapper.tasks[1].set_target(mink.SE3.from_mocap_name(model, data, "right/target"))
+        aloha_mink_wrapper.tasks[0].set_target(goal)
+        side = "left"
+    else:
+        raise NotImplementedError("Cannot move to a pose with x-coordinate 0")
+    
+    aloha_mink_wrapper.solve_ik(rate_dt)
+    data.ctrl[aloha_mink_wrapper.actuator_ids] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids]
+
+    mujoco.mj_step(model, data)  # Step the simulation to update positions/velocities
+    if has_arm_stopped(data, goal, side):
+        rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)
+        save_data(object_pos, rgb, depth, mask, extrinsic, bbox)
+        has_reached_next_pose = True
+        return rgb, depth, mask, extrinsic
+    return None
+
+def process_viewpoint_cycle(data, renderer, tsdf, sampler, object_body_id, viewer, bbox, visited_indices):
+    object_pos = data.xpos[object_body_id]
+    rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)
+    mask = mask.astype(bool)
+    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        o3d.geometry.Image(rgb * mask[..., None]), o3d.geometry.Image(depth * mask),
+        depth_scale=1.0, depth_trunc=0.7, convert_rgb_to_intensity=False
+    )
+
+    tsdf._volume.integrate(rgbd, INTRINSIC_O3D, np.linalg.inv(extrinsic))
+    evaluator = ViewEvaluator(tsdf, INTRINSIC, bbox)
+    
+    print("object_pose: " ,object_pos)
+    sampled_viewpoints = sampler.generate_hemisphere_points_with_orientations(
+        center=object_pos, radius=0.35, num_points=48
+    )
+    for i, vp in enumerate(sampled_viewpoints):
+        mujoco.mjv_initGeom(viewer.user_scn.geoms[i], type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                            size=[0.005, 0, 0], pos=vp['position'], mat=vp['rotation'].flatten(), rgba=[0, 0, 1, 1])
+    viewer.user_scn.ngeom = len(sampled_viewpoints)
+
+    sampled_poses = [np.eye(4) for _ in sampled_viewpoints]
+    for i, vp in enumerate(sampled_viewpoints):
+        sampled_poses[i][:3, :3], sampled_poses[i][:3, 3] = vp['rotation'], vp['position']
+    sampled_poses = [np.linalg.inv(pose) for pose in sampled_poses]
+    gains = np.array([evaluator.compute_information_gain(pose) for pose in sampled_poses])
+
+    for i in visited_indices:
+        gains[i] = -1
+
+    logging.info(visited_indices, "is visited")
+    top_idx = np.argmax(gains)
+    logging.info(f"Top gain at index {top_idx}: {gains[top_idx]}, {gains[gains > 0].shape[0]} views > 0")
+
+    viewer.user_scn.geoms[top_idx].rgba[:] = [1, 0, 0, 1]
+    camera_pose = np.eye(4)
+    camera_pose[:3, :3] = sampled_viewpoints[top_idx]['rotation']
+    camera_pose[:3, 3] = sampled_viewpoints[top_idx]['position']
+    eef_pose = camera_pose @ np.linalg.inv(np.load("tasks/handeye_mujoco.npy"))
+
+    visited_indices.append(top_idx)
+
+    return mink.SE3.from_matrix(eef_pose).wxyz_xyz, sampled_viewpoints
 
 if __name__ == "__main__":
-    # Initialization
     model = mujoco.MjModel.from_xml_path(str(_XML))
     data = mujoco.MjData(model)
-    physics = mujoco.Physics.from_xml_path(str(_XML))
     tsdf = TSDFVolume(0.5, 64)
     sampler = ViewSampler()
     aloha_mink_wrapper = AlohaMinkWrapper(model, data)
     renderer = mujoco.Renderer(model, 480, 640)
-    initialize_scene(data, model)
-    
-    # camera = mujoco.Camera(physics)
-    # camera_matrix = camera.matrix
-    # print(camera_matrix, "camera ")
-    if os.path.exists('saved_data'):
-        os.system('rm -r saved_data')
-    np.random.seed(2)
-    
-    try:
-        with mujoco.viewer.launch_passive(model=model, data=data, show_left_ui=False, show_right_ui=False) as viewer:
-            mujoco.mjv_defaultFreeCamera(model, viewer.cam)
-            aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
-            rate = RateLimiter(frequency=100, warn=False)
-            
-            # Initialize viewpoints
-            object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
-            object_pos = data.xpos[object_body_id]
-            
-            rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)    
-            mask = mask.astype(np.bool_)
-            rgb = rgb * mask[:, :, None]
-            depth = depth * mask
-            initial_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(     
-                o3d.geometry.RGBDImage.create_from_color_and_depth(
-                    o3d.geometry.Image(rgb), o3d.geometry.Image(depth),
-                    depth_scale=1.0, depth_trunc=0.7, convert_rgb_to_intensity=False
-                ), INTRINSIC_O3D, np.linalg.inv(extrinsic)
-            )
-            bbox = np.concatenate([np.min(initial_pcd.points, axis=0), np.max(initial_pcd.points, axis=0)])
-            bbox_center = (bbox[:3] + bbox[3:]) / 2
+    has_reached_next_pose = False
+    visited_indices = []
+    initialize_scene(model, data, aloha_mink_wrapper)
+    os.system('rm -r saved_data')
+    np.random.seed(3)
 
-            sampled_viewpoints = sampler.generate_hemisphere_points_with_orientations(
-                center=object_pos, radius=0.35, num_points=128, hemisphere='right'
-            )
-            
-            for i, viewpoint in enumerate(sampled_viewpoints):
-                mujoco.mjv_initGeom(
-                    viewer.user_scn.geoms[i], type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                    size=[0.005, 0, 0], pos=viewpoint['position'],
-                    mat=viewpoint['rotation'].flatten(), rgba=[1, 0, 0, 1]
-                )
-            viewer.user_scn.ngeom = len(sampled_viewpoints)
+    with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+        mujoco.mjv_defaultFreeCamera(model, viewer.cam)
+        aloha_mink_wrapper.tasks[2].set_target_from_configuration(aloha_mink_wrapper.configuration)
+        rate = RateLimiter(frequency=100, warn=False)
+        object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
 
-            rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)
-            rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-                o3d.geometry.Image(rgb), o3d.geometry.Image(depth),
+        # Initial render and bbox setup
+        mujoco.mj_step(model, data)
+        rgb, depth, mask, extrinsic = render(data, renderer, object_body_id)
+        initial_pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
+            o3d.geometry.RGBDImage.create_from_color_and_depth(
+                o3d.geometry.Image(rgb * mask[..., None].astype(bool)),
+                o3d.geometry.Image(depth * mask.astype(bool)),
                 depth_scale=1.0, depth_trunc=0.7, convert_rgb_to_intensity=False
-            )
+            ), INTRINSIC_O3D, np.linalg.inv(extrinsic)
+        )
+        bbox = np.concatenate([np.min(initial_pcd.points, axis=0), np.max(initial_pcd.points, axis=0)])
+        bbox = np.load("bbox_0.npy")
+        save_data(data.xpos[object_body_id], rgb, depth, mask, extrinsic, bbox)
+        
+        # Main loop: 5 iterations
+        for iteration in range(5):
+            logging.info(f"Starting iteration {iteration + 1}/5")
+            next_pose, viewpoints = process_viewpoint_cycle(data, renderer, tsdf, sampler, object_body_id, viewer, bbox, visited_indices)
+            has_reached_next_pose = False
 
-            save_data(object_pos, rgb, depth, mask, extrinsic, bbox)
-
-            tsdf._volume.integrate(rgbd, INTRINSIC_O3D, np.linalg.inv(extrinsic))
-            evaluator = ViewEvaluator(tsdf, INTRINSIC, bbox)
-            sampled_poses = [np.eye(4) for _ in sampled_viewpoints]
-            for i, view in enumerate(sampled_viewpoints):
-                sampled_poses[i][:3, :3], sampled_poses[i][:3, 3] = view['rotation'], view['position']
-            sampled_poses = [np.linalg.inv(pose) for pose in sampled_poses]
-
-            gains = [evaluator.compute_information_gain(pose) for pose in sampled_poses]
-            top_gain_indices = np.argsort(gains)[-1:][::-1]
-            
-            gains = np.array(gains)
-            print(f"Gains > 0: {gains[gains > 0].shape[0]} views")
-
-            while viewer.is_running():
-                aloha_mink_wrapper.compensate_gravity([
-                    model.body("left/base_link").id,
-                    model.body("right/base_link").id
-                ])
-                mujoco.mj_step(model, data)
-                mujoco.mj_forward(model, data)
-
-                # Update viewpoints
-                for i, viewpoint in enumerate(sampled_viewpoints):
-                    viewer.user_scn.geoms[i].pos[:] = viewpoint['position']
-                    viewer.user_scn.geoms[i].mat[:] = viewpoint['rotation']
-
-                    if i in top_gain_indices:
-                        viewer.user_scn.geoms[i].rgba[:] = [1, 0, 0, 1]
-                    else:
-                        viewer.user_scn.geoms[i].rgba[:] = [0, 0, 1, 1]
-
-                # Get the highest gain camera pose
-                camera_pose_highest_gain = sampled_viewpoints[top_gain_indices[0]]
-
-                camera_pose = np.eye(4)
-                camera_pose[:3, :3] = camera_pose_highest_gain['rotation']
-                camera_pose[:3, 3] = camera_pose_highest_gain['position']
-                np.save("saved_data/pose_2.npy", camera_pose)
-                camera_eef = np.load("mujoco_handeye.npy")
-                eef_pose = camera_pose @ np.linalg.inv(camera_eef)
-                move_right_arm_to_pose(data, model, aloha_mink_wrapper, mink.SE3.from_matrix(camera_pose).wxyz_xyz, rate.dt)
+            # Move to the next pose until the arm stops at that position
+            while viewer.is_running() and not has_reached_next_pose:
+                aloha_mink_wrapper.compensate_gravity([model.body("left/base_link").id, model.body("right/base_link").id])
+                result = move_to_pose(model, data, aloha_mink_wrapper, next_pose, rate.dt, renderer, object_body_id, data.xpos[object_body_id], bbox)
+                if result:
+                    rgb, depth, mask, extrinsic = result
+                    tsdf._volume.integrate(
+                        o3d.geometry.RGBDImage.create_from_color_and_depth(
+                            o3d.geometry.Image(rgb), o3d.geometry.Image(depth),
+                            depth_scale=1.0, depth_trunc=0.7, convert_rgb_to_intensity=False
+                        ), INTRINSIC_O3D, np.linalg.inv(extrinsic)
+                    )
+                for i, vp in enumerate(viewpoints):
+                    viewer.user_scn.geoms[i].pos[:] = vp['position']
+                    viewer.user_scn.geoms[i].mat[:] = vp['rotation']
                 viewer.sync()
                 rate.sleep()
-                
-    except KeyboardInterrupt:
-        logging.info("Keyboard interrupt received. Exiting gracefully...")
-        
-    finally:
-        cv2.destroyAllWindows()
+
+            logging.info(f"Completed iteration {iteration + 1}/5")
+
+        logging.info("Finished all iterations")
+        o3d.visualization.draw_geometries(tsdf.get_point_cloud())
