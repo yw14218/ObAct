@@ -10,7 +10,6 @@ import cv2
 from loop_rate_limiters import RateLimiter
 from aloha_mink_wrapper import AlohaMinkWrapper
 from tsdf_torch_mujoco import TSDFVolume, ViewSampler, ViewEvaluator
-from lightglue import LightGlue
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,6 +63,7 @@ def save_data(object_pos, rgb, depth, mask, extrinsic, bbox, save_dir="saved_dat
     existing_indices = [int(p.stem.split('_')[-1]) for p in save_dir.glob("rgb_*.png")]
     idx = max(existing_indices, default=-1) + 1
 
+    rgb = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     for name, data in [("rgb", rgb), ("mask", mask * 255), ("depth", depth), ("pose", extrinsic), ("bbox", bbox)]:
         filename = save_dir / f"{name}_{idx}.{'png' if name in ['rgb', 'mask'] else 'npy'}"
         (cv2.imwrite(str(filename), data) if name in ["rgb", "mask"] else np.save(filename, data))
@@ -181,7 +181,7 @@ if __name__ == "__main__":
             ), INTRINSIC_O3D, np.linalg.inv(extrinsic)
         )
         bbox = np.concatenate([np.min(initial_pcd.points, axis=0), np.max(initial_pcd.points, axis=0)])
-        bbox = np.load("bbox_0.npy")
+        bbox = np.load("tasks/mug/bbox_0.npy")
         save_data(data.xpos[object_body_id], rgb, depth, mask, extrinsic, bbox)
         
         # Main loop: 5 iterations

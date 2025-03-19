@@ -257,7 +257,7 @@ def load_data(folder_path):
     depth_files = sorted(glob.glob(os.path.join(folder_path, "depth*.npy")))
     pose_files = sorted(glob.glob(os.path.join(folder_path, "pose*.npy")))
     
-    return [cv2.imread(f) for f in rgb_files], [np.load(f) for f in depth_files], [np.load(f) for f in pose_files]
+    return [cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2RGB) for f in rgb_files], [np.load(f) for f in depth_files], [np.load(f) for f in pose_files]
 
 def load_intrinsics(file_path, width=WIDTH, height=HEIGHT):
     """Load camera intrinsics from file."""
