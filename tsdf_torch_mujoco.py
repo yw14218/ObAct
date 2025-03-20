@@ -5,18 +5,19 @@ import glob
 import cv2
 import time
 import torch
+from aloha_mink_wrapper import AlohaMinkWrapper
 
 # Constants
 DEFAULT_DATA_FOLDER = "saved_data"
-DEFAULT_INTRINSIC_FILE = "tasks/d405_intrinsic_480x640.npy"
-WIDTH, HEIGHT = 640, 480
+WIDTH, HEIGHT = 640, 360
+INTRINSIC = K = AlohaMinkWrapper.get_K(HEIGHT, WIDTH)
 TSDF_SIZE = 0.5
 TSDF_RESOLUTION = 512
 NUM_SAMPLED_VIEWS = 48
 VOXEL_DOWN_SIZE = 0.005
 CAMERA_SCALE = 0.03
 TOP_GAIN_SCALE = 0.03
-TOP_N = 1
+TOP_N = 3
 RAY_BATCH_SIZE = 5000  # Reduced to avoid memory issues
 RADIUS = 0.35
 
@@ -97,7 +98,7 @@ class ViewSampler:
         )
 
         sampling_data = sampling_data[sampling_data['position'][:, 2] >= 0.15]
-        sampling_data = sampling_data[sampling_data['position'][:, 0] >= -0.15]
+        sampling_data = sampling_data[sampling_data['position'][:, 0] >= -0.05]
 
         return sampling_data
 
@@ -259,9 +260,9 @@ def load_data(folder_path):
     
     return [cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2RGB) for f in rgb_files], [np.load(f) for f in depth_files], [np.load(f) for f in pose_files]
 
-def load_intrinsics(file_path, width=WIDTH, height=HEIGHT):
+def load_intrinsics(intrinsic, width=WIDTH, height=HEIGHT):
     """Load camera intrinsics from file."""
-    K = np.load(file_path)
+    K = intrinsic
     return {
         'width': width,
         'height': height,
@@ -286,10 +287,10 @@ def visualize_geometries(geometries, title):
     o3d.visualization.draw_geometries(geometries)
 
 def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, resolution=TSDF_RESOLUTION,
-                              intrinsic_file=DEFAULT_INTRINSIC_FILE, invert_poses=True, debug=True,
+                              intrinsic=INTRINSIC, invert_poses=True, debug=True,
                               num_sampled_views=NUM_SAMPLED_VIEWS):
     # Load data
-    intrinsic = load_intrinsics(intrinsic_file)
+    intrinsic = load_intrinsics(intrinsic)
     rgb_imgs, depth_imgs, poses = load_data(folder_path)
     
     if not all([rgb_imgs, depth_imgs, poses]):
@@ -373,9 +374,6 @@ def create_and_visualize_tsdf(folder_path=DEFAULT_DATA_FOLDER, size=TSDF_SIZE, r
 
 def main():
     """Entry point for the script."""
-    if not os.path.exists(DEFAULT_INTRINSIC_FILE):
-        print(f"Error: Intrinsic file {DEFAULT_INTRINSIC_FILE} not found!")
-        return
     
     if not os.path.exists(DEFAULT_DATA_FOLDER):
         print(f"Error: Data folder {DEFAULT_DATA_FOLDER} not found!")
