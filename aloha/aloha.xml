@@ -1,8 +1,11 @@
 <mujoco model="aloha">
   <compiler angle="radian" meshdir="assets" autolimits="true"/>
-
   <option cone="elliptic" impratio="10"/>
 
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+  
   <asset>
     <material name="black" rgba="0.15 0.15 0.15 1"/>
 

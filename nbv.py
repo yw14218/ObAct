@@ -15,8 +15,9 @@ from tsdf_torch_mujoco import TSDFVolume, ViewSampler, ViewEvaluator
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 _HERE = Path(__file__).parent
 _XML = _HERE / "aloha" / "merged_scene_mug.xml"
-K = AlohaMinkWrapper.get_K(480, 640)
-INTRINSIC = {'width': 640, 'height': 480, 'fx': K[0, 0], 'fy': K[1, 1], 'cx': K[0, 2], 'cy': K[1, 2]}
+HEIGHT, WIDTH = 360, 640
+K = AlohaMinkWrapper.get_K(HEIGHT, WIDTH)
+INTRINSIC = {'width': WIDTH, 'height': HEIGHT, 'fx': K[0, 0], 'fy': K[1, 1], 'cx': K[0, 2], 'cy': K[1, 2]}
 INTRINSIC_O3D = o3d.camera.PinholeCameraIntrinsic(**INTRINSIC)
 
 def initialize_scene(model, data, aloha_mink_wrapper):
@@ -157,7 +158,7 @@ if __name__ == "__main__":
     tsdf = TSDFVolume(0.5, 64)
     sampler = ViewSampler()
     aloha_mink_wrapper = AlohaMinkWrapper(model, data)
-    renderer = mujoco.Renderer(model, 480, 640)
+    renderer = mujoco.Renderer(model, HEIGHT, WIDTH)
     has_reached_next_pose = False
     visited_indices = []
     initialize_scene(model, data, aloha_mink_wrapper)
