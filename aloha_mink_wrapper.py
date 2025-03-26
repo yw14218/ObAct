@@ -177,6 +177,30 @@ class AlohaMinkWrapper:
         T_ee_world_right[:3, 3] = ee_position
         return T_ee_world_right
 
-
+    @staticmethod
+    def get_K(height, width):
+        # Fixed parameters from the camera spec
+        focal_x = 1.93e-3  # Focal length in x (meters)
+        focal_y = 1.93e-3  # Focal length in y (meters)
+        sensor_width = 3896e-6  # Sensor size in x (meters)
+        sensor_height = 2140e-6  # Sensor size in y (meters)
+        
+        # Calculate pixel size (meters per pixel)
+        pixel_size_x = sensor_width / width
+        pixel_size_y = sensor_height / height
+        
+        # Calculate focal length in pixels
+        f_x = focal_x / pixel_size_x
+        f_y = focal_y / pixel_size_y
+        
+        # Principal point (image center)
+        c_x = width / 2
+        c_y = height / 2
+        
+        # Construct the intrinsic matrix K
+        K = np.array([[f_x, 0, c_x],
+                    [0, f_y, c_y],
+                    [0, 0, 1]])
+        return K
 
 
