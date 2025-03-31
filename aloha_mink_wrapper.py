@@ -146,11 +146,21 @@ class AlohaMinkWrapper:
     @staticmethod
     def get_left_base_to_world(data):
         T_left_base_world = np.eye(4)
-        ee_position = data.site_xpos[data.body("left/base_link").id]
-        ee_orientation = data.site_xmat[data.body("left/base_link").id].reshape(3, 3)
+        ee_position = data.xpos[data.body("left/base_link").id]
+        ee_orientation = data.xmat[data.body("left/base_link").id].reshape(3, 3)
         T_left_base_world[:3, :3] = ee_orientation
         T_left_base_world[:3, 3] = ee_position
         return T_left_base_world
+    
+    @staticmethod
+    def get_right_base_to_world(data):
+        T_right_base_world = np.eye(4)
+        ee_position = data.xpos[data.body("right/base_link").id]
+        ee_orientation = data.xmat[data.body("right/base_link").id].reshape(3, 3)
+        T_right_base_world[:3, :3] = ee_orientation
+        T_right_base_world[:3, 3] = ee_position
+        return T_right_base_world
+
 
     @staticmethod
     def transform_left_to_right(data):

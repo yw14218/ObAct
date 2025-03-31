@@ -49,7 +49,7 @@ def preprocess_image(img):
     img = v2.CenterCrop((224, 308))(img)
     return img
 
-def move_to_pose(data, model, aloha_mink_wrapper, pose, rate_dt):
+def move_to_pose_left(data, model, aloha_mink_wrapper, pose, rate_dt):
     """Move the robot to the given pose."""
     # Set the target pose
     goal = mink.SE3.from_mocap_name(model, data, "left/target")
@@ -66,6 +66,25 @@ def move_to_pose(data, model, aloha_mink_wrapper, pose, rate_dt):
     qvel_raw = data.qvel.copy()
     left_qvel_raw = qvel_raw[:8]
     sum_of_vel = np.sum(np.abs(left_qvel_raw))
+    return True
+
+def move_to_pose_right(data, model, aloha_mink_wrapper, pose, rate_dt):
+    """Move the robot to the given pose."""
+    # Set the target pose
+    goal = mink.SE3.from_mocap_name(model, data, "right/target")
+    goal.wxyz_xyz[:] = pose
+    aloha_mink_wrapper.tasks[0].set_target(mink.SE3.from_mocap_name(model, data, "left/target"))
+    aloha_mink_wrapper.tasks[1].set_target(goal)
+    # Solve the IK
+    aloha_mink_wrapper.solve_ik(rate_dt)
+    # Update the configuration
+    data.ctrl[aloha_mink_wrapper.actuator_ids[6:]] = aloha_mink_wrapper.configuration.q[aloha_mink_wrapper.dof_ids[6:]]
+    # Calculate the error
+    gripper_pos = data.site_xpos[data.site("right/gripper").id]
+    error = np.linalg.norm(goal.wxyz_xyz[4:] - gripper_pos)
+    qvel_raw = data.qvel.copy()
+    right_qvel_raw = qvel_raw[8:]
+    sum_of_vel = np.sum(np.abs(right_qvel_raw))
     return True
 
 if __name__ == "__main__":
@@ -223,7 +242,7 @@ if __name__ == "__main__":
                         pos_lists.append(wxyz_xyz[4:])
                         sphere_index = update_trajectory_spheres(viewer, pos_lists, max_spheres, sphere_index, [1, 0, 0, 1])
                         # move to the pose
-                        reached = move_to_pose(data, model, aloha_mink_wrapper, wxyz_xyz, rate.dt)
+                        reached = move_to_pose_left(data, model, aloha_mink_wrapper, wxyz_xyz, rate.dt)
                         gripper_action = action[6]
                         if gripper_action < 0.036:
                             data.ctrl[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left/gripper")] = 0
