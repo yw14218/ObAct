@@ -23,6 +23,6 @@ def move_all_files(src_folder, dest_folder):
             print(f"Moved: {src_path} -> {dest_path}")
 
 # Example usage
-source = 'E:\datasets_box'
-destination = 'real_datasets_box'
+source = 'C:\\Users\\qc\Downloads\\datasets_top_down'
+destination = 'real_datasets_mug_topdown'
 move_all_files(source, destination)

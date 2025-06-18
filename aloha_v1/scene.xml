@@ -1,0 +1,47 @@
+<mujoco>
+    <asset>
+        <material name="black" rgba="0.15 0.15 0.15 1" />
+        <mesh file="assets/vx300s_7_gripper_wrist_mount.stl" />
+    </asset>
+    <default>
+        <default class="visual">
+            <geom type="mesh" mass="0" group="2" material="black" contype="0" conaffinity="0" />
+        </default>
+        <default class="collision">
+            <geom group="3" type="mesh" condim="6" friction="1 5e-3 5e-4" solref=".01 1" />
+        </default>
+    </default>
+    <include file="base_scene.xml" />
+    <include file="vx300s_dependencies.xml" />
+
+    
+    <asset>
+    <texture builtin="gradient" height="3072" rgb1="1.0 1.0 1.0" rgb2="1.0 1.0 1.0" type="skybox" width="512" />
+    </asset>
+
+    <worldbody>
+        <include file="vx300s_left.xml" />
+        <include file="vx300s_right.xml" />
+
+        
+        
+
+        
+
+    </worldbody>
+
+    <actuator>
+    
+        <position ctrllimited="true" ctrlrange="0.021 0.057" joint="vx300s_left/left_finger" kp="200" user="1" />
+        <position ctrllimited="true" ctrlrange="-0.057 -0.021" joint="vx300s_left/right_finger" kp="200" user="1" />
+
+        
+
+    </actuator>
+
+    <keyframe>
+        <key qpos="0 -0.96 1.16 0 -0.3 0 0.024 -0.024" />
+    </keyframe>
+
+
+</mujoco>

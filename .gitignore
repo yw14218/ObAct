@@ -8,3 +8,4 @@ ckpts/
 robot_control/can
 robot_control/mug
 robot_control/pan
+*.h5

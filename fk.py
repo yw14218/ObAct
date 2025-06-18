@@ -21,7 +21,7 @@ class vx300s:
 # get all h5 file in the directory
 import os
 import h5py
-directory = "real_datasets_box/"
+directory = "real_datasets_mug_topdown/"
 h5_files = [f for f in os.listdir(directory) if f.endswith('.h5')]
 file_names = [f.split(".")[0] for f in h5_files]
 for file in h5_files:

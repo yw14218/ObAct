@@ -377,7 +377,7 @@ if __name__ == "__main__":
     # Initialize to the neutral pose
     initialize_scene(data, model, aloha_mink_wrapper)
 
-    renderer = mujoco.Renderer(model, 240, 320)
+    renderer = mujoco.Renderer(model, 360, 640)
     
     # Create a thread-safe queue and running event
     img_queue = queue.Queue(maxsize=1)
